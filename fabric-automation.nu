@@ -3,28 +3,41 @@
 # Define YouTube channels and their RSS feeds
 # Format: https://www.youtube.com/feeds/videos.xml?channel_id=CHANNEL_ID
 
+# Define feeds at the top level
+let feeds = [
+    {
+        name: "Spoon Fed Study"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1Co9XZd52hiVrePGZ8qfoQ"
+    }
+    {
+        name: "Invest Answers"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCH6KS5IiLfTyunVHPCDYT8Q"
+    }
+    {
+        name: "Camel Finance"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCr_DLep7UQ0B_IFhvTORu8A"
+    }
+    {
+        name: "Dynamo Defi"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCEL45QB7k-UnGa05GAx6HZA"
+    }
+    {
+        name: "Clark Kegley"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-dmJ79518WlKMbsu50eMTQ"
+    }
+    {
+        name: "The Calculator Guy"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCPIMrjFNbYwsbCuZdgEaqeA"
+    }
+]
+
 def get_latest_urls [] {
     # Return a list of RSS feeds for specific YouTube channels
     # You can find channel IDs by:
     # 1. Going to the channel page
     # 2. Right click > View Page Source
     # 3. Search for "channelId"
-    let feeds = [
-        {
-            name: "Spoon Fed Study"
-            url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1Co9XZd52hiVrePGZ8qfoQ"
-        }
-        {
-            name: "Invest Answers"
-            url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCH6KS5IiLfTyunVHPCDYT8Q"
-        }
-        {
-            name: "Camel Finance"
-            url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCr_DLep7UQ0B_IFhvTORu8A"
-        }
-    ]
-    # Read existing videos, ensure unique entries
-    mut latest_urls = []
+    mut latestVideos: list<record> = []
     mut videoList = (open videolist.txt | lines | uniq)
     if $videoList == null {
         touch videolist.txt
@@ -33,21 +46,35 @@ def get_latest_urls [] {
     
     for feed in $feeds {
         print $"Checking ($feed.name)..."
-        $latest_urls = (parse_rss $feed.url)
+        let feed_url = (parse_rss $feed.url | first)  # Get single URL
         
-        # Only append if truly new
-        if ($videoList | where $it == $latest_urls | length) == 0 {
-            $videoList = ($videoList | append $latest_urls)
-        }
+        # Debug print
+       # print $"Found URL: ($feed_url)"
+        
+        # Only append if URL is not in videoList
+        if not ($videoList | any {|existing| $existing == $feed_url }) {
+            print $"New video found for ($feed.name)"
+            $videoList = ($videoList | append $feed_url)
+            $latestVideos = ($latestVideos | append {
+                name: $feed.name,
+                url: $feed_url
+            })
+        } else 
     }
     
     # Save unique entries only
     $videoList | uniq | save videolist.txt -f 
-    $latest_urls 
+    if $latestVideos == null {
+        print $"No new videos found"
+        return null
+    } else {
+        $latestVideos
+    }
 }
 
+
 # Function to fetch RSS feed content
-def parse_rss [url: string] {
+def parse_rss [url: string]  {
     http get $url
     | get content
     | where tag == entry
@@ -58,31 +85,95 @@ def parse_rss [url: string] {
     | get href
 }
 
-def get_fabric_rating [url: string] {
-    let rating = fabric -y $url | fabric -sp tag_and_rate
+def get_fabric_rating [url: string, feed_name: string] {
+    mut rating = (fabric -y $url | fabric -p tag_and_rate | from json)
+    print $"Rating: ($rating)"
+    $rating = ($rating | merge {name: $feed_name})
+    review_url $url $rating 
 }
 
-# Main function to check feeds
-def main [...args: string] {
-    
-    # Check if we have command line arguments
-    if  not ($in| is-empty) {
-        # Get the first argument
-        let input = $in
-        # Get the second argument (with default value if not provided)
-        #let output_file = ($in | get 1 "default_output.md")
-        let url = $input.0
-        # Use the arguments
-        let rating = get_fabric_rating $url
-        if ($rating.rating | into int) > 3 {
-            fabric -y $url | fabric $rating.suggested-prompt -s $'~/Documents/Obsidian Vault/fabric/($rating.suggested-title)().md'
+def review_url [url: string, rating: record, ] {
+    # Extract just the number from the rating string (e.g., "4: (Highly Relevant...)" -> 4)
+    let rating_num = ($rating.rating | split row ":" | first | into int)
+    print $"Rating: ($rating_num)"
+    if $rating_num > 3 {
+        if (pwd) != '~/Documents/Obsidian Vault/fabric' {
+            cd '~/Documents/Obsidian Vault/fabric'
         }
-    } else {
-        # No arguments provided, run the default flow
-        get_latest_urls
+        print $'Analyzing video with: ($rating.suggested-prompt)'
+       # let feed_name = (if ($feeds | where url == $url | length) > 0 { $feeds | where url == $url | get name | first } else { "" })
+        let title = $'($rating.suggested-title | str trim -c " ")($rating.name | if $in == "" { "" } | str trim -c " ") (date now | format date "%Y-%m-%d").md'
+        print $"Title: ($title)"
+        
+        # First create the file with fabric output
+        fabric -y $url | fabric $rating.suggested-prompt -s --output=$"($title)"
+        
+        # Then add labels as markdown links at top of file
+        let labels = ($rating.labels | split row "," | each {|label| $"[[($label | str trim)]]"} | str join " ")
+        #print $"Labels: ($labels)" #debug
+        # Read the newly created file
+        if ($title | path exists) {
+            let file_content = (open $title | lines)
+            let labels_array = ($labels | split row " ")
+            let hashtag_labels = ($labels_array | each {|label| 
+                $"#(($label | str replace -a '[[' '' | str replace -a ']]' ''))"
+            })
+            
+            # Build header content first
+            let header = [
+                $"Channel: ($"([[$rating.name]])" | default "")",
+                $"Labels: ($labels)",
+                $"Tags: ($hashtag_labels | str join ' ')",
+                $"Rating: ($rating.rating)",
+                $"Analysed with: ($rating.suggested-prompt)",
+                ""  # Empty line for spacing
+            ]
+            
+            # Combine everything
+            let new_content = ($header | append $file_content)
+            
+            # Debug print
+            print $"Saving content with ($new_content | length) lines"
+            
+            $new_content | str join "\n" | save $title -f
+            print $"File saved as: ($title)"
+        } else {
+            print $"Error: File ($title) was not created by fabric command"
+        }
     }
 }
 
+# Main function to check feeds
+export def main [...args: string] {
+    
+    # Prioritize command line arguments
+    if not ($args | is-empty) {
+        let url = $args.0
+        print $"Processing URL from args: ($url)"
+        get_fabric_rating $url ""
+        return
+    }
+
+    # Check for piped input as fallback
+    let input = $in
+    if not ($input | is-empty) {
+        print $"Processing URL from pipe: ($input)"
+        get_fabric_rating $input ""
+        return
+    }
+
+    # No input provided, run default flow
+    print "No URL provided, checking feeds..."
+    let latest_urls = get_latest_urls
+    for link in $latest_urls {
+        get_fabric_rating $link.url $link.name
+    }
+}
+
+#TODO: add more youtube channels to the list. 
+#TODO: fix tagging and Name generation. 
+#TODO: Set it up as a module, source it in my nushell config. 
+#TODO: Write the readme and clean up comments/formatting. 
 # Run the script
 #main
 
@@ -93,4 +184,3 @@ def main [...args: string] {
 #   have it reccomend a fabric prompt from a few options. 
 #   have it come up with a title for the saved .md file, to include date, channel, and title of the post. 
 # if it is 'A' or 'S' tier, run 'fabric -y {chosen_promtp} {chosen_url} --output={title}.md'
-#open the created file and add the tags as [[]] at the top. 
