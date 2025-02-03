@@ -1,5 +1,3 @@
-#!/home/ch4d/.cargo/bin/nu
-
 # Define YouTube channels and their RSS feeds
 # Format: https://www.youtube.com/feeds/videos.xml?channel_id=CHANNEL_ID
 
@@ -9,26 +7,30 @@ let feeds = [
         name: "Spoon Fed Study"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1Co9XZd52hiVrePGZ8qfoQ"
     }
-    {
-        name: "Invest Answers"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCH6KS5IiLfTyunVHPCDYT8Q"
-    }
-    {
-        name: "Camel Finance"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCr_DLep7UQ0B_IFhvTORu8A"
-    }
-    {
-        name: "Dynamo Defi"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCEL45QB7k-UnGa05GAx6HZA"
-    }
-    {
-        name: "Clark Kegley"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-dmJ79518WlKMbsu50eMTQ"
-    }
-    {
-        name: "The Calculator Guy"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCPIMrjFNbYwsbCuZdgEaqeA"
-    }
+    # {
+    #     name: "Invest Answers"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCH6KS5IiLfTyunVHPCDYT8Q"
+    # }
+    # {
+    #     name: "Camel Finance"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCr_DLep7UQ0B_IFhvTORu8A"
+    # }
+    # {
+    #     name: "Dynamo Defi"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCEL45QB7k-UnGa05GAx6HZA"
+    # }
+    # {
+    #     name: "Clark Kegley"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-dmJ79518WlKMbsu50eMTQ"
+    # }
+    # {
+    #     name: "The Calculator Guy"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCPIMrjFNbYwsbCuZdgEaqeA"
+    # }
+    # {
+    #     name: "Breaking Points"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCDRIjKy6eZOvKtOELtTdeUA"
+    # }
 ]
 
 def get_latest_urls [] {
@@ -49,7 +51,7 @@ def get_latest_urls [] {
         let feed_url = (parse_rss $feed.url | first)  # Get single URL
         
         # Debug print
-       # print $"Found URL: ($feed_url)"
+        # print $"Found URL: ($feed_url)"
         
         # Only append if URL is not in videoList
         if not ($videoList | any {|existing| $existing == $feed_url }) {
@@ -59,7 +61,7 @@ def get_latest_urls [] {
                 name: $feed.name,
                 url: $feed_url
             })
-        } else 
+        }
     }
     
     # Save unique entries only
@@ -86,23 +88,55 @@ def parse_rss [url: string]  {
 }
 
 def get_fabric_rating [url: string, feed_name: string] {
+    # let raw_output = (fabric -y $url | fabric -p tag_and_rate)
+    # print $"Raw Output: ($raw_output)"
+    
+    # # let think_content = (
+    # #     $raw_output
+    # #     | lines
+    # #     | skip while {|line| not $line =~ "<think>" }
+    # #     | skip 1
+    # #     | take while {|line| not $line =~ "</think>" }
+    # #     | str join "\n"
+    # # )
+    
+    # # Extract the JSON content between ```json and ```
+    # mut rating = (
+    #     $raw_output
+    #     | lines
+    #     | skip while {|line| not ($line | str contains "```json") }
+    #     | skip 1
+    #     | take while {|line| not ($line | str contains "```") }
+    #     | str join "\n"
+    #     | str trim
+    #     | from json
+    # )
+    # $rating | describe
+    # if ($rating | describe) == "record" {
+    #     print $"Rating successfully parsed."
+    #     review_url $url $rating  
+    # } else {
+    #     print $"Error: JSON part not found in the fabric output for URL: $url"
+    # }
+
+    #non chain of reasoning model path 
     mut rating = (fabric -y $url | fabric -p tag_and_rate | from json)
-    print $"Rating: ($rating)"
     $rating = ($rating | merge {name: $feed_name})
-    review_url $url $rating 
+    print $"Rating: ($rating)" #debug
+    review_url $url $rating
 }
 
 def review_url [url: string, rating: record, ] {
     # Extract just the number from the rating string (e.g., "4: (Highly Relevant...)" -> 4)
     let rating_num = ($rating.rating | split row ":" | first | into int)
-    print $"Rating: ($rating_num)"
+    #print $"Rating: ($rating_num)"
     if $rating_num > 3 {
         if (pwd) != '~/Documents/Obsidian Vault/fabric' {
             cd '~/Documents/Obsidian Vault/fabric'
         }
         print $'Analyzing video with: ($rating.suggested-prompt)'
        # let feed_name = (if ($feeds | where url == $url | length) > 0 { $feeds | where url == $url | get name | first } else { "" })
-        let title = $'($rating.suggested-title | str trim -c " ")($rating.name | if $in == "" { "" } | str trim -c " ") (date now | format date "%Y-%m-%d").md'
+        let title = $'($rating.suggested-title | str trim -c " ")($rating.name | if $in == "" { "" } | str trim -c " ") (date now | format date "%d-%m-%Y").md'
         print $"Title: ($title)"
         
         # First create the file with fabric output
@@ -174,6 +208,7 @@ export def main [...args: string] {
 #TODO: fix tagging and Name generation. 
 #TODO: Set it up as a module, source it in my nushell config. 
 #TODO: Write the readme and clean up comments/formatting. 
+#TODO: a function to just add labels/tags to files that already exist. 
 # Run the script
 #main
 
