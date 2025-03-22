@@ -221,7 +221,7 @@ def review_url [url: string, rating: record] {
         return
     }
     
-    print "Fabric command completed"
+    print "Fabric review completed"
     
     # Process the output - handle <think> blocks
     let cleaned_output = if ($cmd_result | str contains "<think>") and ($cmd_result | str contains "</think>") {
