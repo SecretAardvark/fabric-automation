@@ -1,10 +1,5 @@
-export const feeds = [
-    # Return a list of RSS feeds for specific YouTube channels
-    # You can find channel IDs by:
-    # 1. Going to the channel page
-    # 2. Right click > View Page Source
-    # 3. Search for "channelId"
-    {
+    export const feeds = [
+        {
         name: " Spoon Fed Study"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1Co9XZd52hiVrePGZ8qfoQ"
     },
@@ -59,5 +54,42 @@ export const feeds = [
     {
         name: " C7L"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC9pXD8Ch191ffcGEE5rJm_w"
-    }
-]
+    },
+    {
+        name: " CTO Larsson"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCFU-BE5HRJoudqIz1VDKlhQ"
+    },
+    {
+        name: " Some More News"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCvlj0IzjSnNoduQF0l3VGng"
+    },
+    {
+        name: " Taiki Maeda"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC7B3Y1yrg4S7mmgoR-NsfxA"
+    },
+    {
+        name: " Adam Conover"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-kM5kL9CgjN9s9pim089gg"
+    },
+    {
+        name: " Garys Economics"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC5Ghe5TBQGYIOANuiNW4hDQ"
+    },
+    {
+        name: " Rian Doris"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCftSbpEaMtTWcaFnvjwCvXw"
+    },
+    {
+        name: " David Pakman"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCvixJtaXuNdMPUGdOPcY8Ag"
+    },
+    {
+        name: " Brian Taylor Cohen"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCQANb2YPwAtK-IQJrLaaUFw"
+    },
+    # {
+    #     name: " The Realist Report"
+    #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCQ1hT6Dh_LgIyY_Y_Z_Y_Y"
+    # },
+
+    ]

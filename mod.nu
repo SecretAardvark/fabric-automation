@@ -157,15 +157,15 @@ def review_url [url: string, rating: record] {
     }
 
     # Create directory path variable for reuse
-    let vault_dir = '~/Documents/Obsidian Vault/fabric'
     
+    let vault_dir = $"~/Documents/Obsidian Vault/fabric/(date now | format date "%m-%d-%Y")"
     # Expand the path to resolve the tilde
     let expanded_vault_dir = ($vault_dir | path expand)
     
     # Check if directory exists
     if not ($expanded_vault_dir | path exists) {
-        print $"Error: Directory ($expanded_vault_dir) does not exist"
-        return
+        mkdir $expanded_vault_dir
+        print $"Created directory: ($expanded_vault_dir)"
     }
     
     # Store current directory to return to it later
@@ -196,7 +196,7 @@ def review_url [url: string, rating: record] {
     }
     
     let review_title = $'($safe_title) - ($safe_name) (date now | format date "%m-%d-%Y").md'
-    print $"Will save to file: ($review_title)"
+    #print $"Will save to file: ($review_title)"
     
     # Run fabric command and capture output with better error handling
     print "Running fabric command..."
@@ -205,6 +205,7 @@ def review_url [url: string, rating: record] {
             let result = (fabric -y $url | fabric $rating.suggested-prompt -s)
             if ($result | is-empty) {
                 print "Warning: Fabric command returned empty output"
+                null
             }
             $result
         } catch {
@@ -214,7 +215,7 @@ def review_url [url: string, rating: record] {
     }
     
     # Check if output is empty or null
-    if ($cmd_result == null) or ($cmd_result | is-empty) {
+    if ($cmd_result == null) {
         print "Error: No output received from fabric command"
         cd $original_dir
         return
@@ -288,7 +289,7 @@ def review_url [url: string, rating: record] {
             ""  # Empty line for spacing
         ]
         
-        let new_content = ($header | append $file_content)
+        let new_content = ($header | append $rating.one-sentence-summary | append $file_content)
         
         $new_content | str join "\n" | save $review_title -f
         print $"File successfully saved with header: ($review_title)"
@@ -300,6 +301,25 @@ def review_url [url: string, rating: record] {
     cd $original_dir
 }
 
+export def "main get-channel-ID" [channel_url: string] {
+    http get $channel_url | 
+    to text | 
+    parse --regex '<link[^>]*?href="(https://www.youtube.com/channel/[^"]+)"[^>]*?>' | 
+    get capture0 | 
+    first
+}
+
+# def add_channel_rss [url: string, name: string] {
+#     let channel_id = (yt-review get-channel-ID $url)
+#     print $"Channel ID: ($channel_id)"
+#     let new_url = $"https://www.youtube.com/feeds/videos.xml?channel_id=($channel_id)"
+#     print $"New URL: ($new_url)"
+#     $feeds = ($feeds | append [{
+#         name: $name,
+#         url: $new_url
+#     }])
+
+# }
 # Main function to check feeds
 export def main [...args: string] {
     if not ($args | is-empty) {
@@ -340,6 +360,9 @@ export def main [...args: string] {
 #TODO: a function to just add labels/tags to files that already exist. 
 #TODO: fix the tool reviewing videos it's already reviewed. 
 #TODO: Improve and refine the rating prompt. It never rejects any videos, i haven't seen a rating < 4.
+#TODO: Expand the get-channel-ID function to add the channel ID to the default feeds. 
+
+
 
 # this script should: 
 #take a url as an argument or piped input. 
