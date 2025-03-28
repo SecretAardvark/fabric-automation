@@ -1,4 +1,4 @@
-    export const feeds = [
+export const feeds = [
         {
         name: " Spoon Fed Study"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1Co9XZd52hiVrePGZ8qfoQ"
