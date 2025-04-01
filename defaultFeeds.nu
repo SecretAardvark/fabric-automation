@@ -91,5 +91,17 @@ export const feeds = [
     #     name: " The Realist Report"
     #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCQ1hT6Dh_LgIyY_Y_Z_Y_Y"
     # },
+    {
+        name: " Ben Cowen"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCRvqjQPSeaWn-uEx-w0XOIg"
+    },
+    {
+        name: " Cryptocito"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCE1JHFSfUWcXVyzV3KGA9Fw"
+    },
 
-    ]
+    {
+        name: " Cheds Trading"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIRzrBHO7fTsXwjQO8fZz5g"
+    },
+]
