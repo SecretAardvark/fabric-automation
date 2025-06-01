@@ -12,23 +12,28 @@ def get_latest_urls [] {
         touch $videoPath
         []
     }
-    
+
     for feed in $feeds {
-        #print $"Checking ($feed.name)..."
-        let feed_url = (parse_rss $feed.url | first)  # Get single URL
-        # Only append if URL is not in videoList
-        if not ($videoList | any {|existing| $existing == $feed_url }) {
-            print $"New video found for ($feed.name)"
-            $videoList = ($videoList | append $feed_url)
-            $latestVideos = ($latestVideos | append {
-                name: $feed.name,
-                url: $feed_url
-            })
+        print $"Checking ($feed.name)..."
+        try {
+            let feed_url = (parse_rss $feed.url | first)
+            # Only append if URL is not in videoList
+            if not ($videoList | any {|existing| $existing == $feed_url }) {
+                print $"New video found for ($feed.name)"
+                $videoList = ($videoList | append $feed_url)
+                $latestVideos = ($latestVideos | append {
+                    name: $feed.name,
+                    url: $feed_url
+                })
+            }
+        } catch {
+            |e| print $"Error processing feed ($feed.name): ($e.msg)"
+            continue
         }
     }
-    
+
     # Save unique entries only
-    $videoList | uniq | save $videoPath -f 
+    $videoList | uniq | save $videoPath -f
     if ($latestVideos | is-empty) {
         print $"No new videos found"
         return null
@@ -39,15 +44,20 @@ def get_latest_urls [] {
 
 
 # Function to fetch RSS feed content
-def parse_rss [url: string]  {
-    http get $url
-    | get content
-    | where tag == entry
-    | first
-    | get content
-    | where tag == link
-    | get attributes
-    | get href
+def parse_rss [url: string] {
+    try {
+        http get $url
+        | get content
+        | where tag == entry
+        | first
+        | get content
+        | where tag == link
+        | get attributes
+        | get href
+    } catch {
+        |e| print $"Error parsing RSS feed ($url): ($e.msg)"
+        return []
+    }
 }
 
 # Helper function to remove <think> blocks from fabric output
@@ -107,8 +117,29 @@ def parse_fabric_json [raw_output: string, url: string] {
 }
 
 def get_fabric_rating [url: string, feed_name: string] {
-    let raw_output = (fabric -y $url | fabric -p tag_and_rate)
+    print $"Getting fabric rating for ($feed_name): ($url)"
     
+    # Get transcript with error handling
+    let transcript = try {
+        fabric -y $url
+    } catch {
+        |e| print $"Error getting transcript for ($feed_name) - ($url): ($e.msg)"
+        return null
+    }
+    
+    if ($transcript | is-empty) {
+        print $"Error: Empty transcript returned for ($feed_name) - ($url)"
+        return null
+    }
+    
+    # Get rating with error handling
+    let raw_output = try {
+        $transcript | fabric -p tag_and_rate
+    } catch {
+        |e| print $"Error getting rating for ($feed_name) - ($url): ($e.msg)"
+        return null
+    }
+
     # Check if we got any output at all
     if ($raw_output | is-empty) {
         print $"Error: No output received from fabric for URL: ($url)"
@@ -116,16 +147,13 @@ def get_fabric_rating [url: string, feed_name: string] {
     }
 
     let rating_data = (parse_fabric_json $raw_output $url)
-    
-    if $rating_data == null {
-        # Error already printed in parse_fabric_json
-        return null
-    }
-    
+
+ 
+
     # Check if the result is a record
     if ($rating_data | describe) =~ "^record" {
-        # Add the feed name to the rating record
-        { ...$rating_data, name: $feed_name }
+        # Add the feed name and url to the rating record
+        { ...$rating_data, name: $feed_name, url: $url, transcript: $transcript }
     } else {
         print $"Error: Parsed JSON is not a record for URL: ($url)"
         print $"Parsed content type: ($rating_data | describe)"
@@ -139,7 +167,7 @@ def ensure_review_directory [] {
     let vault_dir = ($"($env.VAULT_PATH)/(date now | format date '%m-%d-%Y')" | path expand)
     # Expand the path to resolve the tilde
     #let expanded_vault_dir = ($vault_dir | path expand)
-    
+
     # Check if directory exists and create if not
     if not ($vault_dir | path exists) {
         try {
@@ -154,60 +182,78 @@ def ensure_review_directory [] {
 }
 
 # Helper function to execute the main fabric review command
-def execute_fabric_review [url: string, prompt: string] {
+def execute_fabric_review [url: string, prompt: string, transcript: string] {
     print $'Analyzing video with prompt: ($prompt)'
-    print "Running fabric command..."
+    #print "Running fabric command..."
 
     try {
-        let cmd_result = (fabric -y $url | fabric $prompt -s)
+    #  is this pulling the transcript twice? 
+        # let transcript = fabric -y $url
 
-        if ($cmd_result | is-empty) {
-            print "Warning: Fabric command returned empty output"
-            return "" # Return empty string instead of null for easier handling
-        }
+
+        let cmd_result = ($transcript | fabric $prompt)
 
         # Clean the output using the helper function
         clean_fabric_output $cmd_result
 
     } catch {
-        |e| print $"Error running fabric command: ($e.msg)"
-        return null # Indicate failure
+        |e| match ($e | is-empty) {
+            true => {
+                print "Fabric command returned empty output"
+                return ""
+            }
+            false => {
+                match true {
+                    ($e.msg | str contains "invalid YouTube URL, can't get video ID") => {
+                        print $"Invalid YouTube URL: ($url)"
+                        return null
+                    }
+                    ($e.msg | str contains "transcript not available. (EOF)") => {
+                        print $"No transcript found for ($url)"
+                        return null
+                    }
+                    _ => {
+                        print $"Error running fabric command: ($e.msg)"
+                        return null # Indicate failure
+                    }
+                }
+            }
+        }
     }
 }
 
 # Helper function to format and save the review file
 def format_and_save_review [
-    file_path: string, 
-    review_content: string, 
+    file_path: string,
+    review_content: string,
     rating_data: record
 ] {
     let safe_title = ($rating_data | get -i suggested-title | default "Review" | str trim)
     let safe_name = ($rating_data | get -i name | default "Unknown" | str trim)
-    
+
     # Process labels and suggested tags
     let labels = ($rating_data | get -i labels | default "" | split row "," | each {|label| $"[[($label | str trim)]]"} | str join " ")
     let suggested_tags = ($rating_data | get -i suggested-tags | default "" | split row "," | each {|tag| $"[[($tag | str trim)]]"} | str join " ")
-    
+
     let all_labels = ([$labels, $suggested_tags] | str join " " | str trim)
     let labels_array = ($all_labels | split row " ")
-    let hashtag_labels = ($labels_array | where {|it| not ($it | is-empty)} | each {|label| 
+    let hashtag_labels = ($labels_array | where {|it| not ($it | is-empty)} | each {|label|
         $"#(($label | str replace -a '[[' '' | str replace -a ']]' ''))"
     })
-    
+
     let header = [
-        $"Channel: ([[$safe_name]])",
-        $"Labels: ($all_labels)",
-        $"Tags: ($hashtag_labels | str join ' ')",
-        $"Rating: ($rating_data.rating | default 'N/A')",
-        $"Analysed with: ($rating_data.'suggested-prompt' | default 'N/A')",
-        "",
-        $"*Summary: ($rating_data.'one-sentence-summary' | default '')*",
-        ""  # Empty line for spacing
+        $"([[$safe_name]])",
+        #$"Tags: ($hashtag_labels | str join ' ')",
+        $"***[($safe_title)]\(($rating_data.url)\)***\n",
+
+        $"Rating: ($rating_data.rating | default 'N/A') Analysed with **($rating_data.'suggested-prompt' | default 'N/A')** \n",
+
+        $"***($rating_data.'one-sentence-summary' | default '')\n***",
     ]
-    
+
     # Combine header and review content
-    let final_content = ($header | append $review_content) | str join "\n"
-    
+    let final_content = ($header | append $"($review_content)\n" | append $"($hashtag_labels | str join ' ')\n") | append $"($all_labels)\n"
+
     # Save the file
     try {
         $final_content | save -f $file_path
@@ -228,8 +274,7 @@ def review_url [url: string, rating: record] {
         print $"Warning: Could not parse rating number from '($rating_value_str)'. Assuming 0."
         0
     }
-    print $"($rating.one-sentence-summary)"
-    print $"Parsed rating number: ($rating_num)"
+    print $"Rating: ($rating_num). ($rating.one-sentence-summary)"
     if $rating_num <= 3 {
         print "Rating too low. Skipping review."
         return
@@ -237,14 +282,11 @@ def review_url [url: string, rating: record] {
 
     # --- 2. Ensure Directory and Change To It ---
     let target_dir = (ensure_review_directory)
-    if $target_dir == null {
-        # Error already printed by helper function
-        return 
-    }
-    
+
+
     # Store current directory to return to it later
     let original_dir = (pwd)
-    
+
     # Change to the directory
     try {
         cd $target_dir
@@ -261,14 +303,14 @@ def review_url [url: string, rating: record] {
     let review_filepath = ($target_dir | path join $review_filename) # Use full path
 
     # --- 4. Execute Fabric Review ---
-    let review_content = (execute_fabric_review $url ($rating | get -i 'suggested-prompt' | default 'Summarize this video'))
-    
+    let review_content = (execute_fabric_review $url ($rating | get -i 'suggested-prompt' | default 'Summarize this video') $rating.transcript)
+
     if $review_content == null {
         print "Fabric review command failed. Aborting file save."
         cd $original_dir # Return to original directory on failure
-        return 
+        return
     }
-    
+
     if ($review_content | is-empty) {
         print "Fabric review resulted in empty content. Saving header only."
     } else {
@@ -309,7 +351,7 @@ export def "add-channel" [
     print $"Attempting to add channel: ($name) with URL: ($channel_url)"
 
     # 1. Get Channel ID
-    let channel = (fetch-channel-id $channel_url) 
+    let channel = (fetch-channel-id $channel_url)
     let index = ($channel | str index-of "channel/")
     let channel_id = $channel | str substring ($index + 8)..-1
 
@@ -360,7 +402,7 @@ export def "add-channel" [
 export def main [...args: string] {
     open ("~/dev/nushell/yt-review/.env" | path expand) | from toml | load-env
 
-    #Check to see if the env variables are set. 
+    #Check to see if the env variables are set.
     #print $env.VIDEO_PATH
     #print $env.VAULT_PATH
     if not ($args | is-empty) {
@@ -374,24 +416,27 @@ export def main [...args: string] {
         return
     }
 
-    let input = $in
-    if not ($input | is-empty) {
-        let name = if ($input | length) > 1 { $input.1 } else { "" }
-        print $"Processing URL from pipe: ($input)"
-        let rating = get_fabric_rating $input $name 
-        if $rating != null {
-            review_url $input.0 $rating
-        }
-        return
-    }
+    # let input = $in | str split " "
+    # if not ($input | is-empty) {
+    #     let name = if (($input | str split " " | length) > 1) { $input | str split " " | last } else { "" }
+    #     print $"Processing URL from pipe: ($input.0)"
+    #     let rating = get_fabric_rating $input.0 $name
+    #     if $rating != null {
+    #         review_url $input.0 $rating
+    #     }
+    #     return
+    # }
 
     print "No URL provided, checking feeds..."
     let latest_urls = get_latest_urls
     if $latest_urls != null {
         for link in $latest_urls {
+            print $"Processing ($link.name): ($link.url)"
             let rating = get_fabric_rating $link.url $link.name
             if $rating != null {
                 review_url $link.url $rating
+            } else {
+                print $"Failed to get rating for ($link.name) - ($link.url)"
             }
         }
     } else {
@@ -399,17 +444,22 @@ export def main [...args: string] {
     }
 }
 
-#TODO: Handle channels that put out multiple videos per day. Pull the first 3 urls from the feed and review if they are new. 
-#TODO: a function to just add labels/tags to files that already exist. 
+
+#6/3/25 Got it running again.  Lost the updated 'tag_and_rate' prompt with the re-install, that will need some work. 
+#TODO:  Fix the Saving_Titles_With_underscores thing. 
+#TODO: Update the prompt rating system. 
+
+#TODO: Handle channels that put out multiple videos per day. Pull the first 3 urls from the feed and review if they are new.
+#TODO: a function to just add labels/tags to files that already exist.
 
 
 
 
-# this script should: 
-#take a url as an argument or piped input. 
+# this script should:
+#take a url as an argument or piped input.
 # run it through 'fabric label_and_rate'. Customize the prompt with new tags and themes. Have it reccomend a fabric prompt from a few options.
-#   have it reccomend a fabric prompt from a few options. 
-#   have it come up with a title for the saved .md file, to include date, channel, and title of the post. 
+#   have it reccomend a fabric prompt from a few options.
+#   have it come up with a title for the saved .md file, to include date, channel, and title of the post.
 # if it is 'A' or 'S' tier, run 'fabric -y {chosen_promtp} {chosen_url} --output={title}.md'
-# if no input is provided, check a few rss feeds for new posts. 
-# if they do, scrape the url for the latest post and run it through the same process. 
+# if no input is provided, check a few rss feeds for new posts.
+# if they do, scrape the url for the latest post and run it through the same process.

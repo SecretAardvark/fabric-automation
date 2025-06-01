@@ -104,4 +104,14 @@ export const feeds = [
         name: " Cheds Trading"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIRzrBHO7fTsXwjQO8fZz5g"
     },
+
+    {
+        name: " Bankless"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCAl9Ld79qaZxp9JzEOwd3aA"
+    },
+
+    {
+        name: " Modern Wisdom"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIaH-gZIVC432YRjNVvnyCA"
+    },
 ]
