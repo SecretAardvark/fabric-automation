@@ -14,12 +14,12 @@ def get_latest_urls [] {
     }
 
     for feed in $feeds {
-        print $"Checking ($feed.name)..."
+        print $"(ansi blue)Checking ($feed.name)...(ansi reset)"
         try {
             let feed_url = (parse_rss $feed.url | first)
             # Only append if URL is not in videoList
             if not ($videoList | any {|existing| $existing == $feed_url }) {
-                print $"New video found for ($feed.name)"
+                print $"(ansi green)New video found for ($feed.name)(ansi reset)"
                 $videoList = ($videoList | append $feed_url)
                 $latestVideos = ($latestVideos | append {
                     name: $feed.name,
@@ -27,7 +27,7 @@ def get_latest_urls [] {
                 })
             }
         } catch {
-            |e| print $"Error processing feed ($feed.name): ($e.msg)"
+            |e| print $"(ansi red)Error processing feed ($feed.name): ($e.msg)(ansi reset)"
             continue
         }
     }
@@ -35,7 +35,7 @@ def get_latest_urls [] {
     # Save unique entries only
     $videoList | uniq | save $videoPath -f
     if ($latestVideos | is-empty) {
-        print $"No new videos found"
+        print $"(ansi yellow)No new videos found(ansi reset)"
         return null
     } else {
         $latestVideos
@@ -55,7 +55,7 @@ def parse_rss [url: string] {
         | get attributes
         | get href
     } catch {
-        |e| print $"Error parsing RSS feed ($url): ($e.msg)"
+        |e| print $"(ansi red)Error parsing RSS feed ($url): ($e.msg)(ansi reset)"
         return []
     }
 }
@@ -90,8 +90,8 @@ def parse_fabric_json [raw_output: string, url: string] {
         if $start_index != -1 and $end_index != -1 {
             $cleaned_output | str substring $start_index..($end_index + 1)
         } else {
-            print $"Error: Could not find valid JSON markers in cleaned output for URL: ($url)"
-            print $"Cleaned output was: ($cleaned_output)"
+            print $"(ansi red)Error: Could not find valid JSON markers in cleaned output for URL: ($url)(ansi reset)"
+            print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
             return null
         }
     }
@@ -100,7 +100,7 @@ def parse_fabric_json [raw_output: string, url: string] {
 
     # Check if json_string is actually a string
     if (($json_string | describe) !~ "string") {
-        print $"Error: Potential JSON content is not a string type: ($json_string | describe)"
+        print $"(ansi red)Error: Potential JSON content is not a string type: ($json_string | describe)(ansi reset)"
         return null
     }
 
@@ -108,27 +108,27 @@ def parse_fabric_json [raw_output: string, url: string] {
         let parsed_json = ($json_string | from json)
         return $parsed_json
     } catch {
-        |e| print $"Error: Could not parse JSON from fabric output for URL: ($url): ($e.msg)"
-        print $"Raw output was: ($raw_output)"
-        print $"Cleaned output was: ($cleaned_output)"
-        print $"Attempted to parse: ($json_string)"
+        |e| print $"(ansi red)Error: Could not parse JSON from fabric output for URL: ($url): ($e.msg)(ansi reset)"
+        print $"(ansi red)Raw output was: ($raw_output)(ansi reset)"
+        print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
+        print $"(ansi red)Attempted to parse: ($json_string)(ansi reset)"
         return null
     }
 }
 
 def get_fabric_rating [url: string, feed_name: string] {
-    print $"Getting fabric rating for ($feed_name): ($url)"
+    print $"(ansi blue)Getting fabric rating for ($feed_name): (ansi reset)($url)"
     
     # Get transcript with error handling
     let transcript = try {
         fabric -y $url
     } catch {
-        |e| print $"Error getting transcript for ($feed_name) - ($url): ($e.msg)"
+        |e| print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
         return null
     }
     
     if ($transcript | is-empty) {
-        print $"Error: Empty transcript returned for ($feed_name) - ($url)"
+        print $"(ansi red)Error: Empty transcript returned for ($feed_name) - (ansi reset)($url)"
         return null
     }
     
@@ -136,13 +136,13 @@ def get_fabric_rating [url: string, feed_name: string] {
     let raw_output = try {
         $transcript | fabric -p tag_and_rate
     } catch {
-        |e| print $"Error getting rating for ($feed_name) - ($url): ($e.msg)"
+        |e| print $"(ansi red)Error getting rating for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
         return null
     }
 
     # Check if we got any output at all
     if ($raw_output | is-empty) {
-        print $"Error: No output received from fabric for URL: ($url)"
+        print $"(ansi red)Error: No output received from fabric for URL: ($url)(ansi reset)"
         return null
     }
 
@@ -155,9 +155,9 @@ def get_fabric_rating [url: string, feed_name: string] {
         # Add the feed name and url to the rating record
         { ...$rating_data, name: $feed_name, url: $url, transcript: $transcript }
     } else {
-        print $"Error: Parsed JSON is not a record for URL: ($url)"
-        print $"Parsed content type: ($rating_data | describe)"
-        print $"Parsed content: ($rating_data)"
+        print $"(ansi red)Error: Parsed JSON is not a record for URL: (ansi reset)($url)"
+        print $"(ansi red)Parsed content type: (ansi reset)($rating_data | describe)"
+        print $"(ansi red)Parsed content: (ansi reset)($rating_data)"
         return null
     }
 }
@@ -172,9 +172,9 @@ def ensure_review_directory [] {
     if not ($vault_dir | path exists) {
         try {
             mkdir $vault_dir
-            print $"Created directory: ($vault_dir)"
+            print $"(ansi green)Created directory: ($vault_dir)(ansi reset)"
         } catch {
-            |e| print $"Error: Failed to create directory ($vault_dir): ($e.msg)"
+            |e| print $"(ansi red)Error: (ansi reset) Failed to create directory ($vault_dir): (ansi red) ($e.msg)(ansi reset)"
             return null # Indicate failure
         }
     }
@@ -183,7 +183,7 @@ def ensure_review_directory [] {
 
 # Helper function to execute the main fabric review command
 def execute_fabric_review [url: string, prompt: string, transcript: string] {
-    print $'Analyzing video with prompt: ($prompt)'
+    print $'(ansi blue)Analyzing video with prompt: (ansi reset) ($prompt)'
     #print "Running fabric command..."
 
     try {
@@ -199,21 +199,21 @@ def execute_fabric_review [url: string, prompt: string, transcript: string] {
     } catch {
         |e| match ($e | is-empty) {
             true => {
-                print "Fabric command returned empty output"
+                print $"(ansi yellow)Fabric command returned empty output(ansi reset)"
                 return ""
             }
             false => {
                 match true {
                     ($e.msg | str contains "invalid YouTube URL, can't get video ID") => {
-                        print $"Invalid YouTube URL: ($url)"
+                        print $"(ansi red)Invalid YouTube URL: (ansi reset)($url)"
                         return null
                     }
                     ($e.msg | str contains "transcript not available. (EOF)") => {
-                        print $"No transcript found for ($url)"
+                        print $"(ansi yellow)No transcript found for (ansi reset)($url)"
                         return null
                     }
                     _ => {
-                        print $"Error running fabric command: ($e.msg)"
+                        print $"(ansi red)Error running fabric command: (ansi reset)($e.msg)"
                         return null # Indicate failure
                     }
                 }
@@ -257,10 +257,10 @@ def format_and_save_review [
     # Save the file
     try {
         $final_content | save -f $file_path
-        print $"File successfully saved: ($file_path)"
+        print $"(ansi green)File successfully saved: (ansi reset)($file_path)"
         return true # Indicate success
     } catch {
-        |e| print $"Error saving file ($file_path): ($e.msg)"
+        |e| print $"(ansi red)Error saving file (ansi reset)($file_path): (ansi red) ($e.msg)(ansi reset)"
         return false # Indicate failure
     }
 }
@@ -271,12 +271,12 @@ def review_url [url: string, rating: record] {
     let rating_num = try {
         $rating_value_str | split row ":" | first | str trim | into int
     } catch {
-        print $"Warning: Could not parse rating number from '($rating_value_str)'. Assuming 0."
+        print $"(ansi yellow)Warning: Could not parse rating number from '($rating_value_str)'. Assuming 0.(ansi reset)"
         0
     }
-    print $"Rating: ($rating_num). ($rating.one-sentence-summary)"
+    print $"(ansi blue)Rating: (ansi reset)($rating_num).($rating.one-sentence-summary)"
     if $rating_num <= 3 {
-        print "Rating too low. Skipping review."
+        print $"(ansi yellow)Rating too low. Skipping review.(ansi reset)"
         return
     }
 
@@ -292,7 +292,7 @@ def review_url [url: string, rating: record] {
         cd $target_dir
         # print $"Changed directory to: (pwd)" # Optional: uncomment for debugging
     } catch {
-        |e| print $"Error: Failed to change directory to ($target_dir): ($e.msg)"
+        |e| print $"(ansi red)Error: (ansi reset) Failed to change directory to ($target_dir): (ansi red) ($e.msg)(ansi reset)"
         return # Cannot proceed without correct directory
     }
 
@@ -306,15 +306,15 @@ def review_url [url: string, rating: record] {
     let review_content = (execute_fabric_review $url ($rating | get -i 'suggested-prompt' | default 'Summarize this video') $rating.transcript)
 
     if $review_content == null {
-        print "Fabric review command failed. Aborting file save."
+        print $"(ansi red)Fabric review command failed. Aborting file save.(ansi reset)"
         cd $original_dir # Return to original directory on failure
         return
     }
 
     if ($review_content | is-empty) {
-        print "Fabric review resulted in empty content. Saving header only."
+        print $"(ansi yellow)Fabric review resulted in empty content. Saving header only.(ansi reset)"
     } else {
-        print "Fabric review completed."
+        print $"(ansi green)Fabric review completed. (emoji :thumbsup:)(ansi reset)"
     }
 
     # --- 5. Format and Save File ---
@@ -325,7 +325,7 @@ def review_url [url: string, rating: record] {
     # print $"Returned to directory: (pwd)" # Optional: uncomment for debugging
 
     if not $save_success {
-        print "Failed to save the review file."
+        print $"(ansi red)Failed to save the review file.(ansi reset)"
         # Potentially add more cleanup or error reporting here
     }
 }
@@ -338,7 +338,7 @@ def fetch-channel-id [channel_url: string] {
         | parse --regex '<link[^>]*?href="(https://www.youtube.com/channel/[^"]+)"[^>]*?>'
         | get capture0.0 # Get the first capture group value directly
     } catch {
-        |e| print $"Error fetching/parsing channel ID for ($channel_url): ($e.msg)"
+        |e| print $"(ansi red)Error fetching/parsing channel ID for ($channel_url): ($e.msg)(ansi reset)"
         return null
     }
 }
@@ -348,7 +348,7 @@ export def "add-channel" [
     channel_url: string, # The URL of the channel page (e.g., https://www.youtube.com/@SomeChannel)
     name: string         # The desired name for the channel in the feed list
 ] {
-    print $"Attempting to add channel: ($name) with URL: ($channel_url)"
+    print $"(ansi blue)Attempting to add channel: (ansi reset)($name) with URL:($channel_url)"
 
     # 1. Get Channel ID
     let channel = (fetch-channel-id $channel_url)
@@ -356,10 +356,10 @@ export def "add-channel" [
     let channel_id = $channel | str substring ($index + 8)..-1
 
     if $channel_id == null {
-        print "Failed to retrieve channel ID. Aborting add operation."
+        print $"(ansi red)Failed to retrieve channel ID. Aborting add operation.(ansi reset)"
         return
     }
-    print $"Successfully retrieved Channel ID: ($channel_id)"
+    print $"(ansi green)Successfully retrieved Channel ID: (ansi reset)($channel_id)"
 
     # 2. Construct Feed URL and New Entry String
     let new_feed_url = $"https://www.youtube.com/feeds/videos.xml?channel_id=($channel_id)"
@@ -378,7 +378,7 @@ export def "add-channel" [
         let insertion_point = ($original_content | str index-of ']')
 
         if $insertion_point == null {
-            print $"Error: Could not find the closing ']' in ($feeds_file_path). Cannot add new feed."
+            print $"(ansi red)Error: Could not find the closing ']' in ($feeds_file_path). Cannot add new feed.(ansi reset)"
             return
         }
 
@@ -391,10 +391,10 @@ export def "add-channel" [
 
         # Save the modified content, overwriting the original file
         $modified_content | save -f $feeds_file_path
-        print $"Successfully added channel '($name)' to ($feeds_file_path)."
+        print $"(ansi green)Successfully added channel '($name)' to (ansi reset)($feeds_file_path)."
 
     } catch {
-        |e| print $"Error processing ($feeds_file_path): ($e.msg) ($e)"
+        |e| print $"(ansi red)Error processing (ansi reset)($feeds_file_path): (ansi red) ($e.msg) ($e)(ansi reset)"
     }
 }
 
@@ -408,7 +408,7 @@ export def main [...args: string] {
     if not ($args | is-empty) {
         let url = $args.0
         let name = if ($args | length) > 1 { $args.1 } else { "" }
-        print $"Processing URL from args: ($url)"
+        print $"(ansi blue)Processing URL from args: (ansi reset)($url)"
         let rating = get_fabric_rating $url $name
         if $rating != null {
             review_url $url $rating
@@ -427,20 +427,20 @@ export def main [...args: string] {
     #     return
     # }
 
-    print "No URL provided, checking feeds..."
+    print $"(ansi blue)No URL provided, checking feeds...(ansi reset)"
     let latest_urls = get_latest_urls
     if $latest_urls != null {
         for link in $latest_urls {
-            print $"Processing ($link.name): ($link.url)"
+            #print $"Processing ($link.name): ($link.url)"
             let rating = get_fabric_rating $link.url $link.name
             if $rating != null {
                 review_url $link.url $rating
             } else {
-                print $"Failed to get rating for ($link.name) - ($link.url)"
+                print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
             }
         }
     } else {
-        print "No new videos found"
+        print $"(ansi yellow)No new videos found(ansi reset)"
     }
 }
 
