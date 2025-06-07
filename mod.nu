@@ -96,8 +96,6 @@ def parse_fabric_json [raw_output: string, url: string] {
         }
     }
 
-    #print $"JSON String: ($json_string)" # Optional: uncomment for debugging
-
     # Check if json_string is actually a string
     if (($json_string | describe) !~ "string") {
         print $"(ansi red)Error: Potential JSON content is not a string type: ($json_string | describe)(ansi reset)"
@@ -120,23 +118,50 @@ def get_fabric_rating [url: string, feed_name: string] {
     print $"(ansi blue)Getting fabric rating for ($feed_name): (ansi reset)($url)"
     
     mut transcript = null
-    for attempt in 1..4 {
+    # Exponential backoff delays (in seconds)
+    let delays = [2, 5, 10, 15]
+    
+    for attempt in 1..4 { 
+        if $attempt > 1 {
+            let delay = ($delays | get ($attempt - 2))
+            print $"(ansi yellow)Waiting ($delay) seconds before retry attempt ($attempt)/4..(ansi reset)"
+            sleep ($delay * 1sec)
+        }
+     
         let result = try {
+            # Add a small random delay to avoid hitting rate limits in parallel processing
+            sleep ((random int 1..3) * 1sec)
             fabric -y $url
         } catch {
             |e| 
-            if $attempt < 3 {
-                print $"(ansi yellow)Error getting transcript attempt ($attempt)/3, retrying...(ansi reset)"
+            let error_msg = ($e.msg | default "Unknown error")
+            let exit_code = ($e | get -i exit_code | default "unknown")
+            
+            if $attempt < 4 {
+                print $"(ansi yellow)Error getting transcript attempt ($attempt)/4: ($error_msg) Exit code: ($exit_code)(ansi reset)"
+                
+                # Check for specific error types and handle differently
+                if ($error_msg | str contains "rate limit") or ($error_msg | str contains "429") {
+                    print $"(ansi yellow)Rate limit detected, increasing delay...(ansi reset)"
+                    sleep 30sec  # Longer delay for rate limits
+                } else if ($error_msg | str contains "network") or ($error_msg | str contains "timeout") {
+                    print $"(ansi yellow)Network issue detected, retrying...(ansi reset)"
+                } else if ($error_msg | str contains "Private video") or ($error_msg | str contains "Video unavailable") {
+                    print $"(ansi red)Video is private or unavailable for ($feed_name) - (ansi reset)($url)"
+                    return null  # Don't retry for these errors
+                }
                 null
             } else {
-                print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
-                print $"(ansi red)Failed to get transcript after 3 attempts. Aborting.(ansi reset)"
-                null
+                print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red)($error_msg) Exit code: ($exit_code)(ansi reset)"
+                print $"(ansi yellow)Getting transcript from fallback method...(ansi reset)"
+                get_youtube_transcript $url
+                
             }
         }
         
-        if $result != null {
+        if $result != null and not ($result | is-empty) {
             $transcript = $result
+            print $"(ansi green)Successfully got transcript for ($feed_name) (ansi reset)on attempt ($attempt) (emoji :thumbsup:)"
             break
         }
     }
@@ -150,14 +175,37 @@ def get_fabric_rating [url: string, feed_name: string] {
         return null
     }
     
-    # Get rating with error handling
-    let raw_output = try {
-        $transcript | fabric -p tag_and_rate
-    } catch {
-        |e| print $"(ansi red)Error getting rating for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
+    # Add delay before rating to avoid overwhelming the API
+    sleep 2sec
+    
+    # Get rating with error handling and retry
+    mut raw_output = ""
+    for rating_attempt in 1..3 {
+        let result = try {
+            $transcript | fabric -p tag_and_rate
+        } catch {
+            |e| 
+            if $rating_attempt < 3 {
+                print $"(ansi yellow)Error getting rating attempt ($rating_attempt)/3, retrying...(ansi reset)"
+                sleep 3sec
+                null
+            } else {
+                print $"(ansi red)Error getting rating for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
+                null
+            }
+        }
+        
+        if $result != null and not ($result | is-empty) {
+            $raw_output = $result
+            break
+        }
+    }
+    
+    if $raw_output == null {
         return null
     }
-
+    
+    
     # Check if we got any output at all
     if ($raw_output | is-empty) {
         print $"(ansi red)Error: No output received from fabric for URL: ($url)(ansi reset)"
@@ -165,8 +213,6 @@ def get_fabric_rating [url: string, feed_name: string] {
     }
 
     let rating_data = (parse_fabric_json $raw_output $url)
-
- 
 
     # Check if the result is a record
     if ($rating_data | describe) =~ "^record" {
@@ -448,13 +494,24 @@ export def main [...args: string] {
     print $"(ansi blue)No URL provided, checking feeds...(ansi reset)"
     let latest_urls = get_latest_urls
     if $latest_urls != null {
+        let total_videos = ($latest_urls | length)
+        print $"(ansi blue)Found ($total_videos) new videos to process(ansi reset)"
+        mut video_num = 0
         for link in $latest_urls {
-            #print $"Processing ($link.name): ($link.url)"
+            $video_num = ($video_num + 1)
+            print $"(ansi blue)Processing video ($video_num)/($total_videos): ($link.name)(ansi reset)"
+            
             let rating = get_fabric_rating $link.url $link.name
             if $rating != null {
                 review_url $link.url $rating
             } else {
                 print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
+            }
+            
+            # Add delay between processing different videos to avoid rate limiting
+            if $video_num < $total_videos {
+                print $"(ansi blue)Waiting 10 seconds before processing next video...(ansi reset)"
+                sleep 10sec
             }
         }
     } else {
@@ -481,3 +538,38 @@ export def main [...args: string] {
 # if it is 'A' or 'S' tier, run 'fabric -y {chosen_promtp} {chosen_url} --output={title}.md'
 # if no input is provided, check a few rss feeds for new posts.
 # if they do, scrape the url for the latest post and run it through the same process.
+
+def get_youtube_transcript [video_url: string, lang: string = "en"] {
+    let temp_file = (mktemp)
+    
+    try {
+        # Download transcript using yt-dlp
+        run-external "yt-dlp" [
+            "--quiet"
+            "--no-warnings" 
+            "--write-auto-sub"
+            "--sub-lang" $lang
+            "--skip-download"
+            "--sub-format" "vtt"
+            "-o" $temp_file
+            $"($video_url)"
+        ]
+        
+        # The actual transcript file has the language extension
+        let transcript_file = $"($temp_file).($lang).vtt"
+        
+        # Read and return the content
+        let content = (open $transcript_file)
+        
+        # Clean up
+        rm $transcript_file
+        
+        $content
+    } catch {
+        |e|
+        # Clean up temp file if it exists
+        if ($temp_file | path exists) { rm $temp_file }
+        print $"Error: ($e.msg)"
+        null
+    }
+}
