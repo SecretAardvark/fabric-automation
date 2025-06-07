@@ -119,11 +119,29 @@ def parse_fabric_json [raw_output: string, url: string] {
 def get_fabric_rating [url: string, feed_name: string] {
     print $"(ansi blue)Getting fabric rating for ($feed_name): (ansi reset)($url)"
     
-    # Get transcript with error handling
-    let transcript = try {
-        fabric -y $url
-    } catch {
-        |e| print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
+    mut transcript = null
+    for attempt in 1..4 {
+        let result = try {
+            fabric -y $url
+        } catch {
+            |e| 
+            if $attempt < 3 {
+                print $"(ansi yellow)Error getting transcript attempt ($attempt)/3, retrying...(ansi reset)"
+                null
+            } else {
+                print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
+                print $"(ansi red)Failed to get transcript after 3 attempts. Aborting.(ansi reset)"
+                null
+            }
+        }
+        
+        if $result != null {
+            $transcript = $result
+            break
+        }
+    }
+    
+    if $transcript == null {
         return null
     }
     
