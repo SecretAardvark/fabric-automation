@@ -116,30 +116,30 @@ def parse_fabric_json [raw_output: string, url: string] {
 
 def get_fabric_rating [url: string, feed_name: string] {
     print $"(ansi blue)Getting fabric rating for ($feed_name): (ansi reset)($url)"
-    
+
     mut transcript = null
     # Exponential backoff delays (in seconds)
     let delays = [2, 5, 10, 15]
-    
-    for attempt in 1..4 { 
+
+    for attempt in 1..4 {
         if $attempt > 1 {
             let delay = ($delays | get ($attempt - 2))
             print $"(ansi yellow)Waiting ($delay) seconds before retry attempt ($attempt)/4..(ansi reset)"
             sleep ($delay * 1sec)
         }
-     
+
         let result = try {
             # Add a small random delay to avoid hitting rate limits in parallel processing
             sleep ((random int 1..3) * 1sec)
             fabric -y $url
         } catch {
-            |e| 
+            |e|
             let error_msg = ($e.msg | default "Unknown error")
             let exit_code = ($e | get -i exit_code | default "unknown")
-            
+
             if $attempt < 4 {
                 print $"(ansi yellow)Error getting transcript attempt ($attempt)/4: ($error_msg) Exit code: ($exit_code)(ansi reset)"
-                
+
                 # Check for specific error types and handle differently
                 if ($error_msg | str contains "rate limit") or ($error_msg | str contains "429") {
                     print $"(ansi yellow)Rate limit detected, increasing delay...(ansi reset)"
@@ -153,59 +153,56 @@ def get_fabric_rating [url: string, feed_name: string] {
                 null
             } else {
                 print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red)($error_msg) Exit code: ($exit_code)(ansi reset)"
-                print $"(ansi yellow)Getting transcript from fallback method...(ansi reset)"
-                get_youtube_transcript $url
-                
+                return null
             }
         }
-        
+
         if $result != null and not ($result | is-empty) {
             $transcript = $result
             print $"(ansi green)Successfully got transcript for ($feed_name) (ansi reset)on attempt ($attempt) (emoji :thumbsup:)"
             break
         }
     }
-    
+
     if $transcript == null {
         return null
     }
-    
+
     if ($transcript | is-empty) {
         print $"(ansi red)Error: Empty transcript returned for ($feed_name) - (ansi reset)($url)"
         return null
     }
-    
+
     # Add delay before rating to avoid overwhelming the API
     sleep 2sec
-    
+
     # Get rating with error handling and retry
     mut raw_output = ""
     for rating_attempt in 1..3 {
         let result = try {
             $transcript | fabric -p tag_and_rate
         } catch {
-            |e| 
+            |e|
             if $rating_attempt < 3 {
                 print $"(ansi yellow)Error getting rating attempt ($rating_attempt)/3, retrying...(ansi reset)"
-                sleep 3sec
                 null
             } else {
                 print $"(ansi red)Error getting rating for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
                 null
             }
         }
-        
+
         if $result != null and not ($result | is-empty) {
             $raw_output = $result
             break
         }
     }
-    
+
     if $raw_output == null {
         return null
     }
-    
-    
+
+
     # Check if we got any output at all
     if ($raw_output | is-empty) {
         print $"(ansi red)Error: No output received from fabric for URL: ($url)(ansi reset)"
@@ -251,7 +248,7 @@ def execute_fabric_review [url: string, prompt: string, transcript: string] {
     #print "Running fabric command..."
 
     try {
-    #  is this pulling the transcript twice? 
+    #  is this pulling the transcript twice?
         # let transcript = fabric -y $url
 
 
@@ -312,7 +309,7 @@ def format_and_save_review [
 
         $"Rating: ($rating_data.rating | default 'N/A') Analysed with **($rating_data.'suggested-prompt' | default 'N/A')** \n",
 
-        $"***($rating_data.'one-sentence-summary' | default '')\n***",
+        $"***($rating_data.'one-sentence-summary' | default '')***\n",
     ]
 
     # Combine header and review content
@@ -500,18 +497,18 @@ export def main [...args: string] {
         for link in $latest_urls {
             $video_num = ($video_num + 1)
             print $"(ansi blue)Processing video ($video_num)/($total_videos): ($link.name)(ansi reset)"
-            
+
             let rating = get_fabric_rating $link.url $link.name
             if $rating != null {
                 review_url $link.url $rating
             } else {
                 print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
             }
-            
+
             # Add delay between processing different videos to avoid rate limiting
             if $video_num < $total_videos {
-                print $"(ansi blue)Waiting 10 seconds before processing next video...(ansi reset)"
-                sleep 10sec
+                # print $"(ansi blue)Waiting 2 seconds before processing next video...(ansi reset)"
+                sleep 2sec
             }
         }
     } else {
@@ -520,9 +517,7 @@ export def main [...args: string] {
 }
 
 
-#6/3/25 Got it running again.  Lost the updated 'tag_and_rate' prompt with the re-install, that will need some work. 
-#TODO:  Fix the Saving_Titles_With_underscores thing. 
-#TODO: Update the prompt rating system. 
+#7/6/24 cut the sleep timers down to 2 seconds to speed up the review process a bit.
 
 #TODO: Handle channels that put out multiple videos per day. Pull the first 3 urls from the feed and review if they are new.
 #TODO: a function to just add labels/tags to files that already exist.
@@ -530,46 +525,3 @@ export def main [...args: string] {
 
 
 
-# this script should:
-#take a url as an argument or piped input.
-# run it through 'fabric label_and_rate'. Customize the prompt with new tags and themes. Have it reccomend a fabric prompt from a few options.
-#   have it reccomend a fabric prompt from a few options.
-#   have it come up with a title for the saved .md file, to include date, channel, and title of the post.
-# if it is 'A' or 'S' tier, run 'fabric -y {chosen_promtp} {chosen_url} --output={title}.md'
-# if no input is provided, check a few rss feeds for new posts.
-# if they do, scrape the url for the latest post and run it through the same process.
-
-def get_youtube_transcript [video_url: string, lang: string = "en"] {
-    let temp_file = (mktemp)
-    
-    try {
-        # Download transcript using yt-dlp
-        run-external "yt-dlp" [
-            "--quiet"
-            "--no-warnings" 
-            "--write-auto-sub"
-            "--sub-lang" $lang
-            "--skip-download"
-            "--sub-format" "vtt"
-            "-o" $temp_file
-            $"($video_url)"
-        ]
-        
-        # The actual transcript file has the language extension
-        let transcript_file = $"($temp_file).($lang).vtt"
-        
-        # Read and return the content
-        let content = (open $transcript_file)
-        
-        # Clean up
-        rm $transcript_file
-        
-        $content
-    } catch {
-        |e|
-        # Clean up temp file if it exists
-        if ($temp_file | path exists) { rm $temp_file }
-        print $"Error: ($e.msg)"
-        null
-    }
-}
