@@ -79,15 +79,7 @@ export const feeds = [
         name: " Rian Doris"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCftSbpEaMtTWcaFnvjwCvXw"
     },
-    {
-        name: " David Pakman"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCvixJtaXuNdMPUGdOPcY8Ag"
-    },
-    {
-        name: " Brian Taylor Cohen"
-        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCQANb2YPwAtK-IQJrLaaUFw"
-    },
-    # {
+        # {
     #     name: " The Realist Report"
     #     url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCQ1hT6Dh_LgIyY_Y_Z_Y_Y"
     # },
@@ -113,5 +105,15 @@ export const feeds = [
     {
         name: " Modern Wisdom"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCIaH-gZIVC432YRjNVvnyCA"
+    },
+
+    {
+        name: " Vaush"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC1E-JS8L0j1Ei70D9VEFrPQ"
+    },
+
+    {
+        name: " Jack Hopkins"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-XMoeMXbYrMlvmyLSwDd3g"
     },
 ]

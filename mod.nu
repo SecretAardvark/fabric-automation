@@ -1,4 +1,4 @@
-use defaultFeeds.nu
+use defaultFeeds.nu feeds
 
 
 
@@ -49,7 +49,7 @@ def parse_rss [url: string] {
         http get $url
         | get content
         | where tag == entry
-        | first
+        | first # first 3 here to handle channels with multiple vids?
         | get content
         | where tag == link
         | get attributes
@@ -91,7 +91,7 @@ def parse_fabric_json [raw_output: string, url: string] {
             $cleaned_output | str substring $start_index..($end_index + 1)
         } else {
             print $"(ansi red)Error: Could not find valid JSON markers in cleaned output for URL: ($url)(ansi reset)"
-            print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
+      #  print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
             return null
         }
     }
@@ -107,9 +107,9 @@ def parse_fabric_json [raw_output: string, url: string] {
         return $parsed_json
     } catch {
         |e| print $"(ansi red)Error: Could not parse JSON from fabric output for URL: ($url): ($e.msg)(ansi reset)"
-        print $"(ansi red)Raw output was: ($raw_output)(ansi reset)"
-        print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
-        print $"(ansi red)Attempted to parse: ($json_string)(ansi reset)"
+    #  print $"(ansi red)Raw output was: ($raw_output)(ansi reset)"
+    #    print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
+    #    print $"(ansi red)Attempted to parse: ($json_string)(ansi reset)"
         return null
     }
 }
@@ -131,11 +131,11 @@ def get_fabric_rating [url: string, feed_name: string] {
         let result = try {
             # Add a small random delay to avoid hitting rate limits in parallel processing
             sleep ((random int 1..3) * 1sec)
-            fabric -y $url
+            fabric --disable-responses-api -y $url
         } catch {
             |e|
             let error_msg = ($e.msg | default "Unknown error")
-            let exit_code = ($e | get -i exit_code | default "unknown")
+            let exit_code = ($e | get -o exit_code | default "unknown")
 
             if $attempt < 4 {
                 print $"(ansi yellow)Error getting transcript attempt ($attempt)/4: ($error_msg) Exit code: ($exit_code)(ansi reset)"
@@ -156,10 +156,10 @@ def get_fabric_rating [url: string, feed_name: string] {
                 return null
             }
         }
-
+   
         if $result != null and not ($result | is-empty) {
             $transcript = $result
-            print $"(ansi green)Successfully got transcript for ($feed_name) (ansi reset)on attempt ($attempt) (emoji :thumbsup:)"
+            print $"(ansi green)Successfully got transcript for ($feed_name) (ansi reset)on attempt ($attempt) 👍"
             break
         }
     }
@@ -180,7 +180,7 @@ def get_fabric_rating [url: string, feed_name: string] {
     mut raw_output = ""
     for rating_attempt in 1..3 {
         let result = try {
-            $transcript | fabric -p tag_and_rate
+            $transcript | fabric --disable-responses-api -p tag_and_rate
         } catch {
             |e|
             if $rating_attempt < 3 {
@@ -252,7 +252,7 @@ def execute_fabric_review [url: string, prompt: string, transcript: string] {
         # let transcript = fabric -y $url
 
 
-        let cmd_result = ($transcript | fabric $prompt)
+        let cmd_result = ($transcript | fabric --disable-responses-api $prompt)
 
         # Clean the output using the helper function
         clean_fabric_output $cmd_result
@@ -289,12 +289,12 @@ def format_and_save_review [
     review_content: string,
     rating_data: record
 ] {
-    let safe_title = ($rating_data | get -i suggested-title | default "Review" | str trim)
-    let safe_name = ($rating_data | get -i name | default "Unknown" | str trim)
+    let safe_title = ($rating_data | get -o suggested-title | default "Review" | str trim)
+    let safe_name = ($rating_data | get -o name | default "Unknown" | str trim)
 
     # Process labels and suggested tags
-    let labels = ($rating_data | get -i labels | default "" | split row "," | each {|label| $"[[($label | str trim)]]"} | str join " ")
-    let suggested_tags = ($rating_data | get -i suggested-tags | default "" | split row "," | each {|tag| $"[[($tag | str trim)]]"} | str join " ")
+    let labels = ($rating_data | get -o labels | default "" | split row "," | each {|label| $"[[($label | str trim)]]"} | str join " ")
+    let suggested_tags = ($rating_data | get -o suggested-tags | default "" | split row "," | each {|tag| $"[[($tag | str trim)]]"} | str join " ")
 
     let all_labels = ([$labels, $suggested_tags] | str join " " | str trim)
     let labels_array = ($all_labels | split row " ")
@@ -328,16 +328,19 @@ def format_and_save_review [
 
 def review_url [url: string, rating: record] {
     # --- 1. Check Rating ---
-    let rating_value_str = ($rating | get -i rating | default "0" | into string)
-    let rating_num = try {
-        $rating_value_str | split row ":" | first | str trim | into int
-    } catch {
-        print $"(ansi yellow)Warning: Could not parse rating number from '($rating_value_str)'. Assuming 0.(ansi reset)"
-        0
-    }
-    print $"(ansi blue)Rating: (ansi reset)($rating_num).($rating.one-sentence-summary)"
-    if $rating_num <= 3 {
-        print $"(ansi yellow)Rating too low. Skipping review.(ansi reset)"
+    let rating_value_str = ($rating | get -o rating | default "D" | into string)
+    
+    # Extract the letter grade (S, A, B, C, D) from the rating string
+    # The rating format is like "S Tier: (Must Consume...)" or "A Tier: (...)"
+    let rating_letter = ($rating_value_str | split row " " | first | str trim)
+    
+    # Map letter grades to skip/process decision
+    # Skip only D tier (and below if any). Process S, A, B, C tiers
+    let should_skip = ($rating_letter in ["D"])
+    
+    print $"(ansi blue)Rating: (ansi reset)($rating_letter) Tier - ($rating.one-sentence-summary)"
+    if $should_skip {
+        print $"(ansi yellow)Rating too low (($rating_letter)). Skipping review.(ansi reset)"
         return
     }
 
@@ -358,13 +361,13 @@ def review_url [url: string, rating: record] {
     }
 
     # --- 3. Prepare Filename ---
-    let safe_title = ($rating | get -i suggested-title | default "Review" | str trim)
-    let safe_name = ($rating | get -i name | default "Unknown" | str trim)
+    let safe_title = ($rating | get -o suggested-title | default "Review" | str trim)
+    let safe_name = ($rating | get -o name | default "Unknown" | str trim)
     let review_filename = $'($safe_title) - ($safe_name) (date now | format date "%m-%d-%Y").md'
     let review_filepath = ($target_dir | path join $review_filename) # Use full path
 
     # --- 4. Execute Fabric Review ---
-    let review_content = (execute_fabric_review $url ($rating | get -i 'suggested-prompt' | default 'Summarize this video') $rating.transcript)
+    let review_content = (execute_fabric_review $url ($rating | get -o 'suggested-prompt' | default 'Summarize this video') $rating.transcript)
 
     if $review_content == null {
         print $"(ansi red)Fabric review command failed. Aborting file save.(ansi reset)"
@@ -375,7 +378,7 @@ def review_url [url: string, rating: record] {
     if ($review_content | is-empty) {
         print $"(ansi yellow)Fabric review resulted in empty content. Saving header only.(ansi reset)"
     } else {
-        print $"(ansi green)Fabric review completed. (emoji :thumbsup:)(ansi reset)"
+        print $"(ansi green)Fabric review completed. 👍(ansi reset)"
     }
 
     # --- 5. Format and Save File ---
@@ -490,6 +493,7 @@ export def main [...args: string] {
 
     print $"(ansi blue)No URL provided, checking feeds...(ansi reset)"
     let latest_urls = get_latest_urls
+    mut playlist = []
     if $latest_urls != null {
         let total_videos = ($latest_urls | length)
         print $"(ansi blue)Found ($total_videos) new videos to process(ansi reset)"
@@ -499,8 +503,19 @@ export def main [...args: string] {
             print $"(ansi blue)Processing video ($video_num)/($total_videos): ($link.name)(ansi reset)"
 
             let rating = get_fabric_rating $link.url $link.name
+           
             if $rating != null {
+                # Extract rating letter for playlist decision
+                let rating_value_str = ($rating | get -o rating | default "D" | into string)
+                let rating_letter = ($rating_value_str | split row " " | first | str trim)
+                
+                # Add S and A tier videos to playlist
+                if ($rating_letter in ['S', 'A']) {
+                    $playlist = $playlist | append $link.url
+                }
+
                 review_url $link.url $rating
+                 
             } else {
                 print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
             }
@@ -511,6 +526,19 @@ export def main [...args: string] {
                 sleep 2sec
             }
         }
+    if not ($playlist | is-empty) {
+      let ids = ($playlist | each { |url| 
+        try {
+          $url | parse --regex 'v=(?P<id>[^&]+)' | get id.0
+        } catch {
+          null
+        }
+      } | where $it != null)
+      
+      if not ($ids | is-empty) {
+        omarchy-launch-or-focus-webapp YouTube $"https://www.youtube.com/watch_videos?video_ids=($ids | str join ',')" #this solution only works for omarchy linux.
+      }
+    }
     } else {
         print $"(ansi yellow)No new videos found(ansi reset)"
     }
@@ -518,10 +546,10 @@ export def main [...args: string] {
 
 
 #7/6/24 cut the sleep timers down to 2 seconds to speed up the review process a bit.
-
+#TODO: non omarchy way to open the youtube playlist
 #TODO: Handle channels that put out multiple videos per day. Pull the first 3 urls from the feed and review if they are new.
 #TODO: a function to just add labels/tags to files that already exist.
-
-
+#TODO: a function that opens all the s or a tier files in a new youtube playlist
+#TODO: create a summary page with the rating, short description, and link to each video,plus a link for the playlist 
 
 
