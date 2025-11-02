@@ -395,6 +395,71 @@ def review_url [url: string, rating: record] {
 }
 
 
+def extract_video_id [url: string] {
+    try {
+        $url | parse --regex 'v=(?P<id>[^&?#]+)' | get id.0
+    } catch {
+        try {
+            $url | parse --regex 'youtu\.be/(?P<id>[^?&/#]+)' | get id.0
+        } catch {
+            try {
+                $url | parse --regex '/embed/(?P<id>[^?&/#]+)' | get id.0
+            } catch {
+                try {
+                    $url | parse --regex '/shorts/(?P<id>[^?&/#]+)' | get id.0
+                } catch {
+                    null
+                }
+            }
+        }
+    }
+}
+
+def build_playlist_url [urls: list<string>] {
+    let ids = ($urls | each {|u| extract_video_id $u } | where $it != null)
+    if ($ids | is-empty) { null } else { $"https://www.youtube.com/watch_videos?video_ids=($ids | str join ',')" }
+}
+
+def create_summary_page [
+    items: list<record>,
+    playlist_url: string
+] {
+    if ($items | is-empty) {
+        return null
+    }
+
+    let target_dir = (ensure_review_directory)
+    let date_str = (date now | format date '%m-%d-%Y')
+    let file_path = ($target_dir | path join $'Summary - ($date_str).md')
+
+    let header = [
+        $"# YouTube Reviews Summary - ($date_str)\n",
+        (if $playlist_url != null { $"*Playlist \(B or above\):* [Open in YouTube]\(($playlist_url)\)\n\n" } else { "" }),
+        "---\n"
+    ]
+
+    let body = ($items | each {|it|
+        let rating_value_str = ($it | get -o rating | default "D" | into string)
+        let letter = ($rating_value_str | split row " " | first | str trim)
+        let title = ($it | get -o 'suggested-title' | default "Untitled" | str trim)
+        let summary = ($it | get -o 'one-sentence-summary' | default "" | str trim)
+        let url = ($it | get -o url | default "" | str trim)
+        let channel = ($it | get -o name | default "" | str trim)
+        $"- **($letter)** [($title)]\(($url)\) — ($summary) \(by ($channel)\)\n"
+    } | str join "")
+
+    let content = ($header | append $body) | str join ""
+
+    try {
+        $content | save -f $file_path
+        print $"(ansi green)Summary saved: (ansi reset)($file_path)"
+        $file_path
+    } catch {
+        |e| print $"(ansi red)Error saving summary: (ansi reset)($e.msg)"
+        null
+    }
+}
+
 def fetch-channel-id [channel_url: string] {
     try {
         http get $channel_url
@@ -494,6 +559,8 @@ export def main [...args: string] {
     print $"(ansi blue)No URL provided, checking feeds...(ansi reset)"
     let latest_urls = get_latest_urls
     mut playlist = []
+    mut summary_items = []
+    mut summary_urls = []
     if $latest_urls != null {
         let total_videos = ($latest_urls | length)
         print $"(ansi blue)Found ($total_videos) new videos to process(ansi reset)"
@@ -514,6 +581,12 @@ export def main [...args: string] {
                     $playlist = $playlist | append $link.url
                 }
 
+                # Collect B or above for summary and playlist link
+                if ($rating_letter in ['S', 'A', 'B']) {
+                    $summary_urls = ($summary_urls | append $link.url)
+                    $summary_items = ($summary_items | append $rating)
+                }
+
                 review_url $link.url $rating
                  
             } else {
@@ -526,6 +599,10 @@ export def main [...args: string] {
                 sleep 2sec
             }
         }
+    # Build and save summary page for B or above
+    let summary_playlist_url = (build_playlist_url $summary_urls)
+    create_summary_page $summary_items $summary_playlist_url
+
     if not ($playlist | is-empty) {
       let ids = ($playlist | each { |url| 
         try {
