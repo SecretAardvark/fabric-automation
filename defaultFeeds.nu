@@ -116,4 +116,9 @@ export const feeds = [
         name: " Jack Hopkins"
         url: "https://www.youtube.com/feeds/videos.xml?channel_id=UC-XMoeMXbYrMlvmyLSwDd3g"
     },
+
+    {
+        name: " Tim Ferriss"
+        url: "https://www.youtube.com/feeds/videos.xml?channel_id=UCznv7Vf9nBdJYvBagFdAHWw"
+    },
 ]
