@@ -1,6 +1,80 @@
-use defaultFeeds.nu feeds
+# Resolve paths relative to this module so it can be used from any directory.
+# NOTE: `path self` is parse-time only, so these must be `const`.
+const YT_REVIEW_MODULE_DIR = (path self | path dirname)
+const YT_REVIEW_FEEDS_FILE = ($YT_REVIEW_MODULE_DIR | path join "defaultFeeds.nu")
+
+use $YT_REVIEW_FEEDS_FILE feeds
+
+# Find the base directory for config/data files (where `.env` lives).
+# Priority:
+#   1) $env.YT_REVIEW_DIR (explicit override)
+#   2) ~/.config/yt-review (global config)
+#   3) module directory (repo default)
+#   4) current working directory (optional per-project override)
+def get_base_dir [] {
+    let candidates = [
+        ($env | get -o YT_REVIEW_DIR | default "")
+        ("~/.config/yt-review" | path expand)
+        $YT_REVIEW_MODULE_DIR
+        ($env.PWD)
+    ]
+
+    for dir in $candidates {
+        if ($dir | is-empty) { continue }
+        let env_path = ($dir | path join ".env")
+        if ($env_path | path exists) {
+            return $dir
+        }
+    }
+
+    # Last resort: fall back to module dir (gives a deterministic location)
+    $YT_REVIEW_MODULE_DIR
+}
 
 
+# Load list of failed video URLs
+def load_failed_urls [] {
+    let failed_path = ($env | get -o FAILED_PATH | default "" | path expand)
+    if ($failed_path | is-empty) or not ($failed_path | path exists) {
+        []
+    } else {
+        open $failed_path | lines | uniq
+    }
+}
+
+# Add a URL to the failed videos cache
+def add_failed_url [url: string, reason: string] {
+    let failed_path = ($env | get -o FAILED_PATH | default "" | path expand)
+    if ($failed_path | is-empty) { return }
+
+    # Create file if it doesn't exist
+    if not ($failed_path | path exists) {
+        touch $failed_path
+    }
+
+    # Append with timestamp and reason as comment
+    let entry = $"($url) # ($reason) - (date now | format date '%Y-%m-%d')"
+    let current = (open $failed_path)
+
+    # Only add if not already present
+    if not ($current | str contains $url) {
+        $"($current)\n($entry)" | save -f $failed_path
+        print $"(ansi yellow)Added to failed cache: ($url)(ansi reset)"
+    }
+}
+
+# Check if URL is in the failed cache
+def is_failed_url [url: string] {
+    let failed_urls = (load_failed_urls)
+    $failed_urls | any {|line| $line | str contains $url}
+}
+
+# Append a URL to videolist.txt so a mid-run crash doesn't leave it un-tracked.
+# Replaces the previous behavior of bulk-saving all new URLs upfront.
+def mark_url_processed [url: string] {
+    let videoPath = ($env.VIDEO_PATH | path expand)
+    $"\n($url)" | save --append $videoPath
+}
 
 def get_latest_urls [] {
     mut latestVideos: list<record> = []
@@ -16,15 +90,33 @@ def get_latest_urls [] {
     for feed in $feeds {
         print $"(ansi blue)Checking ($feed.name)...(ansi reset)"
         try {
-            let feed_url = (parse_rss $feed.url | first)
-            # Only append if URL is not in videoList
-            if not ($videoList | any {|existing| $existing == $feed_url }) {
-                print $"(ansi green)New video found for ($feed.name)(ansi reset)"
-                $videoList = ($videoList | append $feed_url)
-                $latestVideos = ($latestVideos | append {
-                    name: $feed.name,
-                    url: $feed_url
-                })
+            let feed_videos = (parse_rss $feed.url)
+
+            # Process each video from the feed (handles same-day multiple uploads)
+            mut new_count = 0
+            for video in $feed_videos {
+                # Skip if in failed cache
+                if (is_failed_url $video.url) {
+                    continue
+                }
+
+                # Only append if URL is not in videoList
+                if not ($videoList | any {|existing| $existing == $video.url }) {
+                    $new_count = $new_count + 1
+                    $videoList = ($videoList | append $video.url)
+                    $latestVideos = ($latestVideos | append {
+                        name: $feed.name,
+                        url: $video.url
+                    })
+                }
+            }
+
+            if $new_count > 0 {
+                if $new_count == 1 {
+                    print $"(ansi green)New video found for ($feed.name)(ansi reset)"
+                } else {
+                    print $"(ansi green)($new_count) new videos found for ($feed.name)(ansi reset)"
+                }
             }
         } catch {
             |e| print $"(ansi red)Error processing feed ($feed.name): ($e.msg)(ansi reset)"
@@ -32,8 +124,9 @@ def get_latest_urls [] {
         }
     }
 
-    # Save unique entries only
-    $videoList | uniq | save $videoPath -f
+    # NOTE: do not bulk-save here. URLs are appended one at a time in the main loop
+    # via mark_url_processed, so a mid-run crash can't poison the next run's
+    # "new videos" check by marking unprocessed URLs as already seen.
     if ($latestVideos | is-empty) {
         print $"(ansi yellow)No new videos found(ansi reset)"
         return null
@@ -43,17 +136,39 @@ def get_latest_urls [] {
 }
 
 
-# Function to fetch RSS feed content
-def parse_rss [url: string] {
+# Function to fetch RSS feed content - returns list of {url, published} records
+def parse_rss [url: string, --all (-a)] {
     try {
-        http get $url
-        | get content
-        | where tag == entry
-        | first # first 3 here to handle channels with multiple vids?
-        | get content
-        | where tag == link
-        | get attributes
-        | get href
+        let entries = http get $url
+            | get content
+            | where tag == entry
+
+        # Extract url and published date from each entry
+        let parsed = $entries | each {|entry|
+            let content = $entry.content
+            let video_url = ($content | where tag == link | get attributes.href | first)
+            let published = ($content | where tag == published | get content | first | get content | first)
+            { url: $video_url, published: $published }
+        }
+
+        if $all {
+            $parsed
+        } else {
+            # Return only same-day videos (compared to the most recent video)
+            if ($parsed | is-empty) { return [] }
+
+            let today = (date now | format date '%Y-%m-%d')
+            let same_day_videos = $parsed | where {|v|
+                ($v.published | into datetime | format date '%Y-%m-%d') == $today
+            }
+
+            # If no videos from today, just return the most recent one
+            if ($same_day_videos | is-empty) {
+                $parsed | first 1
+            } else {
+                $same_day_videos
+            }
+        }
     } catch {
         |e| print $"(ansi red)Error parsing RSS feed ($url): ($e.msg)(ansi reset)"
         return []
@@ -74,6 +189,23 @@ def clean_fabric_output [raw_output: string] {
     }
 }
 
+# Helper to find matching closing brace for nested JSON
+def find_matching_brace [text: string, start: int] {
+    let chars = ($text | split chars)
+    mut depth = 0
+    mut pos = $start
+
+    for char in ($chars | skip $start) {
+        if $char == "{" { $depth = $depth + 1 }
+        if $char == "}" {
+            $depth = $depth - 1
+            if $depth == 0 { return $pos }
+        }
+        $pos = $pos + 1
+    }
+    -1  # No matching brace found
+}
+
 # Helper function to safely parse JSON from fabric output
 def parse_fabric_json [raw_output: string, url: string] {
     # Clean the output first
@@ -85,15 +217,21 @@ def parse_fabric_json [raw_output: string, url: string] {
     } else {
         # Attempt to find JSON if it's embedded
         let start_index = ($cleaned_output | str index-of "{")
-        let end_index = ($cleaned_output | str index-of "}")
 
-        if $start_index != -1 and $end_index != -1 {
-            $cleaned_output | str substring $start_index..($end_index + 1)
-        } else {
-            print $"(ansi red)Error: Could not find valid JSON markers in cleaned output for URL: ($url)(ansi reset)"
-      #  print $"(ansi red)Cleaned output was: ($cleaned_output)(ansi reset)"
+        if $start_index == -1 {
+            print $"(ansi red)Error: Could not find JSON start marker in output for URL: ($url)(ansi reset)"
             return null
         }
+
+        # Find the matching closing brace (handles nested objects)
+        let end_index = (find_matching_brace $cleaned_output $start_index)
+
+        if $end_index == -1 {
+            print $"(ansi red)Error: Could not find matching closing brace for URL: ($url)(ansi reset)"
+            return null
+        }
+
+        $cleaned_output | str substring $start_index..($end_index + 1)
     }
 
     # Check if json_string is actually a string
@@ -131,11 +269,21 @@ def get_fabric_rating [url: string, feed_name: string] {
         let result = try {
             # Add a small random delay to avoid hitting rate limits in parallel processing
             sleep ((random int 1..3) * 1sec)
-            fabric --disable-responses-api -y $url
+            # Hard timeout (180s) so a hung fabric/yt-dlp can't deadlock the run.
+            # --kill-after sends SIGKILL 10s after SIGTERM if the child ignores it.
+            ^timeout --kill-after=10 180 fabric --disable-responses-api -y $url
         } catch {
             |e|
             let error_msg = ($e.msg | default "Unknown error")
             let exit_code = ($e | get -o exit_code | default "unknown")
+
+            # GNU timeout exits 124 when it had to kill the child. Retrying the same
+            # hang is pointless — mark the URL failed and bail.
+            if ($exit_code == 124) {
+                print $"(ansi red)Timed out fetching transcript for ($feed_name) - (ansi reset)($url)"
+                add_failed_url $url "Timeout fetching transcript"
+                return null
+            }
 
             if $attempt < 4 {
                 print $"(ansi yellow)Error getting transcript attempt ($attempt)/4: ($error_msg) Exit code: ($exit_code)(ansi reset)"
@@ -146,13 +294,19 @@ def get_fabric_rating [url: string, feed_name: string] {
                     sleep 30sec  # Longer delay for rate limits
                 } else if ($error_msg | str contains "network") or ($error_msg | str contains "timeout") {
                     print $"(ansi yellow)Network issue detected, retrying...(ansi reset)"
-                } else if ($error_msg | str contains "Private video") or ($error_msg | str contains "Video unavailable") {
+                } else if ($error_msg | str contains "Private video") or ($error_msg | str contains "Video unavailable") or ($error_msg | str contains "members-only") {
                     print $"(ansi red)Video is private or unavailable for ($feed_name) - (ansi reset)($url)"
+                    add_failed_url $url "Private/Unavailable"
                     return null  # Don't retry for these errors
+                } else if ($error_msg | str contains "age-restricted") or ($error_msg | str contains "Sign in to confirm") {
+                    print $"(ansi red)Video is age-restricted for ($feed_name) - (ansi reset)($url)"
+                    add_failed_url $url "Age-restricted"
+                    return null
                 }
                 null
             } else {
                 print $"(ansi red)Error getting transcript for ($feed_name) - (ansi reset)($url): (ansi red)($error_msg) Exit code: ($exit_code)(ansi reset)"
+                add_failed_url $url "Transcript retries exhausted"
                 return null
             }
         }
@@ -180,14 +334,21 @@ def get_fabric_rating [url: string, feed_name: string] {
     mut raw_output = ""
     for rating_attempt in 1..3 {
         let result = try {
-            $transcript | fabric --disable-responses-api -p tag_and_rate
+            $transcript | ^timeout --kill-after=10 120 fabric --disable-responses-api -p tag_and_rate
         } catch {
             |e|
+            let exit_code = ($e | get -o exit_code | default "unknown")
+            if ($exit_code == 124) {
+                print $"(ansi red)Timed out getting rating for ($feed_name) - (ansi reset)($url)"
+                add_failed_url $url "Timeout getting rating"
+                return null
+            }
             if $rating_attempt < 3 {
                 print $"(ansi yellow)Error getting rating attempt ($rating_attempt)/3, retrying...(ansi reset)"
                 null
             } else {
                 print $"(ansi red)Error getting rating for ($feed_name) - (ansi reset)($url): (ansi red) ($e.msg)(ansi reset)"
+                add_failed_url $url "Rating retries exhausted"
                 null
             }
         }
@@ -248,11 +409,7 @@ def execute_fabric_review [url: string, prompt: string, transcript: string] {
     #print "Running fabric command..."
 
     try {
-    #  is this pulling the transcript twice?
-        # let transcript = fabric -y $url
-
-
-        let cmd_result = ($transcript | fabric --disable-responses-api $prompt)
+        let cmd_result = ($transcript | ^timeout --kill-after=10 240 fabric --disable-responses-api $prompt)
 
         # Clean the output using the helper function
         clean_fabric_output $cmd_result
@@ -264,6 +421,11 @@ def execute_fabric_review [url: string, prompt: string, transcript: string] {
                 return ""
             }
             false => {
+                let exit_code = ($e | get -o exit_code | default "unknown")
+                if ($exit_code == 124) {
+                    print $"(ansi red)Timed out running fabric review for: (ansi reset)($url)"
+                    return null
+                }
                 match true {
                     ($e.msg | str contains "invalid YouTube URL, can't get video ID") => {
                         print $"(ansi red)Invalid YouTube URL: (ansi reset)($url)"
@@ -329,12 +491,8 @@ def format_and_save_review [
 def review_url [url: string, rating: record] {
     # --- 1. Check Rating ---
     let rating_value_str = ($rating | get -o rating | default "D" | into string)
-    
-    # Extract the letter grade (S, A, B, C, D) from the rating string
-    # The rating format is like "S Tier: (Must Consume...)" or "A Tier: (...)"
-    let rating_letter = ($rating_value_str | split row " " | first | str trim)
-    
-    # Map letter grades to skip/process decision
+    let rating_letter = (extract_rating_letter $rating_value_str)
+
     # Skip only D tier (and below if any). Process S, A, B, C tiers
     let should_skip = ($rating_letter in ["D"])
     
@@ -420,6 +578,63 @@ def build_playlist_url [urls: list<string>] {
     if ($ids | is-empty) { null } else { $"https://www.youtube.com/watch_videos?video_ids=($ids | str join ',')" }
 }
 
+# Extract rating letter (S/A/B/C/D) from rating string
+def extract_rating_letter [rating_str: string] {
+    $rating_str | split row " " | first | str trim
+}
+
+# Print end-of-run statistics
+def print_stats [stats: record] {
+    let total = $stats.s + $stats.a + $stats.b + $stats.c + $stats.d + $stats.skipped + $stats.failed
+    if $total == 0 { return }
+
+    print ""
+    print $"(ansi blue)═══════════════════════════════════════(ansi reset)"
+    print $"(ansi blue)           Run Statistics(ansi reset)"
+    print $"(ansi blue)═══════════════════════════════════════(ansi reset)"
+
+    if $stats.s > 0 { print $"  (ansi green)S-Tier:(ansi reset)  ($stats.s) - must watch" }
+    if $stats.a > 0 { print $"  (ansi green)A-Tier:(ansi reset)  ($stats.a) - highly recommended" }
+    if $stats.b > 0 { print $"  (ansi cyan)B-Tier:(ansi reset)  ($stats.b) - worth watching" }
+    if $stats.c > 0 { print $"  (ansi yellow)C-Tier:(ansi reset)  ($stats.c) - if you have time" }
+    if $stats.d > 0 { print $"  (ansi white)D-Tier:(ansi reset)  ($stats.d) - skipped" }
+    if $stats.failed > 0 { print $"  (ansi red)Failed:(ansi reset)  ($stats.failed)" }
+
+    let reviewed = $stats.s + $stats.a + $stats.b + $stats.c
+    print $"(ansi blue)───────────────────────────────────────(ansi reset)"
+    print $"  (ansi white)Total:(ansi reset)   ($total) videos processed"
+    print $"  (ansi white)Reviewed:(ansi reset) ($reviewed) | (ansi white)Skipped:(ansi reset) ($stats.d + $stats.failed)"
+    print $"(ansi blue)═══════════════════════════════════════(ansi reset)"
+}
+
+# Cross-platform URL opener with omarchy fallback
+def open_url [url: string, app_name: string = ""] {
+    # Try omarchy first (if available)
+    if $app_name != "" {
+        let omarchy_result = try {
+            ^omarchy-launch-or-focus-webapp $app_name $url
+            true
+        } catch {
+            false
+        }
+        if $omarchy_result { return }
+    }
+
+    # Cross-platform fallback
+    let os = ($nu.os-info.name | str downcase)
+    try {
+        match $os {
+            "linux" => { ^xdg-open $url }
+            "macos" => { ^open $url }
+            "windows" => { ^cmd /c start $url }
+            _ => { ^xdg-open $url }  # Default to xdg-open
+        }
+    } catch {
+        |e| print $"(ansi yellow)Could not open URL automatically: (ansi reset)($url)"
+        print $"(ansi yellow)Error: ($e.msg)(ansi reset)"
+    }
+}
+
 def create_summary_page [
     items: list<record>,
     playlist_url: string
@@ -440,7 +655,7 @@ def create_summary_page [
 
     let body = ($items | each {|it|
         let rating_value_str = ($it | get -o rating | default "D" | into string)
-        let letter = ($rating_value_str | split row " " | first | str trim)
+        let letter = (extract_rating_letter $rating_value_str)
         let title = ($it | get -o 'suggested-title' | default "Untitled" | str trim)
         let summary = ($it | get -o 'one-sentence-summary' | default "" | str trim)
         let url = ($it | get -o url | default "" | str trim)
@@ -472,11 +687,144 @@ def fetch-channel-id [channel_url: string] {
     }
 }
 
+# View or clear the failed videos cache
+export def "failed-videos" [
+    --clear (-c)  # Clear the failed videos cache
+] {
+    let base_dir = (get_base_dir)
+    if ($env | get -o FAILED_PATH | default "" | is-empty) {
+        open ($base_dir | path join ".env") | from toml | load-env
+    }
+
+    let failed_path = ($env | get -o FAILED_PATH | default "" | path expand)
+
+    if $clear {
+        if ($failed_path | path exists) {
+            rm $failed_path
+            print $"(ansi green)Failed videos cache cleared.(ansi reset)"
+        } else {
+            print $"(ansi yellow)No failed videos cache to clear.(ansi reset)"
+        }
+        return
+    }
+
+    if not ($failed_path | path exists) {
+        print $"(ansi yellow)No failed videos cached.(ansi reset)"
+        return
+    }
+
+    let failed = (open $failed_path | lines | where {|l| not ($l | is-empty)})
+    if ($failed | is-empty) {
+        print $"(ansi yellow)No failed videos cached.(ansi reset)"
+        return
+    }
+
+    let count = ($failed | length)
+    print $"(ansi blue)Failed Videos Cache - ($count) entries:(ansi reset)"
+    print ""
+    $failed | each {|line|
+        let parts = ($line | split row " # ")
+        let url = ($parts | first)
+        let reason = if ($parts | length) > 1 { $parts | skip 1 | str join " # " } else { "Unknown" }
+        print $"  (ansi red)✗(ansi reset) ($url)"
+        print $"    (ansi white)($reason)(ansi reset)"
+    }
+    null
+}
+
+# List all subscribed channels
+export def "list-channels" [] {
+    let count = ($feeds | length)
+    print $"(ansi blue)Subscribed Channels - ($count) total:(ansi reset)"
+    print ""
+
+    $feeds | enumerate | each {|item|
+        let idx = $item.index + 1
+        let feed = $item.item
+        let name = ($feed.name | str trim)
+        let channel_id = ($feed.url | parse --regex 'channel_id=(.+)' | get capture0.0? | default "unknown")
+        print $"  (ansi cyan)($idx | fill -a right -w 2).(ansi reset) ($name)"
+        print $"      (ansi white)https://youtube.com/channel/($channel_id)(ansi reset)"
+    }
+    null
+}
+
+# Remove a channel by name or index
+export def "remove-channel" [
+    identifier: string  # Channel name (partial match) or index number from list-channels
+] {
+    let base_dir = (get_base_dir)
+    if ($env | get -o VIDEO_PATH | default "" | is-empty) {
+        open ($base_dir | path join ".env") | from toml | load-env
+    }
+
+    let feeds_file_path = ($base_dir | path join "defaultFeeds.nu")
+
+    # Check if identifier is a number (index)
+    let is_index = ($identifier | str trim | parse --regex '^\d+$' | is-not-empty)
+
+    let channel_to_remove = if $is_index {
+        let idx = ($identifier | into int) - 1
+        if $idx < 0 or $idx >= ($feeds | length) {
+            print $"(ansi red)Error: Index ($identifier) out of range. Use list-channels to see valid indices.(ansi reset)"
+            return
+        }
+        $feeds | get $idx
+    } else {
+        # Find by partial name match (case-insensitive)
+        let matches = $feeds | where {|f| ($f.name | str downcase) =~ ($identifier | str downcase)}
+        if ($matches | is-empty) {
+            print $"(ansi red)Error: No channel found matching '($identifier)'(ansi reset)"
+            return
+        }
+        if ($matches | length) > 1 {
+            print $"(ansi yellow)Multiple channels match '($identifier)':(ansi reset)"
+            $matches | each {|m| print $"  - ($m.name | str trim)"}
+            print $"(ansi yellow)Please be more specific or use the index number.(ansi reset)"
+            return
+        }
+        $matches | first
+    }
+
+    let channel_name = ($channel_to_remove.name | str trim)
+    print $"(ansi blue)Removing channel: (ansi reset)($channel_name)"
+
+    try {
+        let original_content = (open $feeds_file_path | into string)
+
+        # Build regex pattern to match the channel entry
+        # Match the entire block: { name: "...", url: "..." },
+        let escaped_name = ($channel_to_remove.name | str replace -a '"' '\\"')
+        let escaped_url = ($channel_to_remove.url | str replace -a '?' '\\?')
+
+        # Find and remove the entry - match the block structure
+        let pattern = $'\\{[\\s\\n]*name:\\s*"($escaped_name)"[\\s\\n]*url:\\s*"($escaped_url)"[\\s\\n]*\\},?'
+
+        let modified_content = ($original_content | str replace --regex $pattern "")
+
+        # Clean up any double newlines that might result
+        let cleaned_content = ($modified_content | str replace --regex '\n{3,}' "\n\n")
+
+        $cleaned_content | save -f $feeds_file_path
+        print $"(ansi green)Successfully removed '($channel_name)' from feeds.(ansi reset)"
+        print $"(ansi yellow)Note: Restart nushell or re-source the module to see changes.(ansi reset)"
+
+    } catch {
+        |e| print $"(ansi red)Error removing channel: ($e.msg)(ansi reset)"
+    }
+}
+
 # New exported function to add a channel
 export def "add-channel" [
     channel_url: string, # The URL of the channel page (e.g., https://www.youtube.com/@SomeChannel)
     name: string         # The desired name for the channel in the feed list
 ] {
+    # Load env if not already loaded
+    let base_dir = (get_base_dir)
+    if ($env | get -o VIDEO_PATH | default "" | is-empty) {
+        open ($base_dir | path join ".env") | from toml | load-env
+    }
+
     print $"(ansi blue)Attempting to add channel: (ansi reset)($name) with URL:($channel_url)"
 
     # 1. Get Channel ID
@@ -496,8 +844,7 @@ export def "add-channel" [
     let new_entry_string = $"\n    {\n        name: \" ($name | str trim)\"\n        url: \"($new_feed_url)\"\n    },"
 
     # 3. Read, Modify, and Save defaultFeeds.nu
-    # Assuming defaultFeeds.nu is in the same directory or NU_LIB_DIRS includes its location.
-    let feeds_file_path = "~/dev/nushell/yt-review/defaultFeeds.nu" | path expand
+    let feeds_file_path = ($base_dir | path join "defaultFeeds.nu")
 
     try {
         # Read the entire file content as a single string
@@ -529,7 +876,8 @@ export def "add-channel" [
 
 # Main function to check feeds
 export def main [...args: string] {
-    open ("~/dev/nushell/yt-review/.env" | path expand) | from toml | load-env
+    let base_dir = (get_base_dir)
+    open ($base_dir | path join ".env") | from toml | load-env
 
     #Check to see if the env variables are set.
     #print $env.VIDEO_PATH
@@ -561,6 +909,8 @@ export def main [...args: string] {
     mut playlist = []
     mut summary_items = []
     mut summary_urls = []
+    mut stats = { s: 0, a: 0, b: 0, c: 0, d: 0, skipped: 0, failed: 0 }
+
     if $latest_urls != null {
         let total_videos = ($latest_urls | length)
         print $"(ansi blue)Found ($total_videos) new videos to process(ansi reset)"
@@ -569,29 +919,60 @@ export def main [...args: string] {
             $video_num = ($video_num + 1)
             print $"(ansi blue)Processing video ($video_num)/($total_videos): ($link.name)(ansi reset)"
 
-            let rating = get_fabric_rating $link.url $link.name
-           
-            if $rating != null {
-                # Extract rating letter for playlist decision
-                let rating_value_str = ($rating | get -o rating | default "D" | into string)
-                let rating_letter = ($rating_value_str | split row " " | first | str trim)
-                
-                # Add S and A tier videos to playlist
-                if ($rating_letter in ['S', 'A']) {
-                    $playlist = $playlist | append $link.url
-                }
+            # Guard the whole per-video pipeline so one bad video can't kill the run
+            # before reaching create_summary_page / print_stats below.
+            # Catch closures can't mutate outer mut vars, so capture the error and
+            # handle it after the try block.
+            let caught = try {
+                let rating = get_fabric_rating $link.url $link.name
 
-                # Collect B or above for summary and playlist link
-                if ($rating_letter in ['S', 'A', 'B']) {
-                    $summary_urls = ($summary_urls | append $link.url)
-                    $summary_items = ($summary_items | append $rating)
-                }
+                if $rating != null {
+                    # Extract rating letter for playlist decision
+                    let rating_value_str = ($rating | get -o rating | default "D" | into string)
+                    let rating_letter = (extract_rating_letter $rating_value_str)
 
-                review_url $link.url $rating
-                 
-            } else {
-                print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
+                    # Track stats
+                    match $rating_letter {
+                        "S" => { $stats.s = $stats.s + 1 }
+                        "A" => { $stats.a = $stats.a + 1 }
+                        "B" => { $stats.b = $stats.b + 1 }
+                        "C" => { $stats.c = $stats.c + 1 }
+                        "D" => { $stats.d = $stats.d + 1 }
+                        _ => { $stats.skipped = $stats.skipped + 1 }
+                    }
+
+                    # Add S and A tier videos to playlist
+                    if ($rating_letter in ['S', 'A']) {
+                        $playlist = $playlist | append $link.url
+                    }
+
+                    # Collect B or above for summary and playlist link
+                    if ($rating_letter in ['S', 'A', 'B']) {
+                        $summary_urls = ($summary_urls | append $link.url)
+                        $summary_items = ($summary_items | append $rating)
+                    }
+
+                    review_url $link.url $rating
+
+                } else {
+                    print $"(ansi red)Failed to get rating for ($link.name) (ansi reset)($link.url)"
+                    "rating_null"
+                }
+                null
+            } catch {|e|
+                {msg: ($e.msg | default "unknown"), name: $link.name}
             }
+
+            if ($caught | describe) =~ "^record" {
+                $stats.failed = $stats.failed + 1
+                print $"(ansi red)Unexpected error processing ($caught.name): ($caught.msg)(ansi reset)"
+            } else if $caught == "rating_null" {
+                $stats.failed = $stats.failed + 1
+            }
+
+            # Always mark URL as processed (success or failure) so a later crash
+            # doesn't leave it un-tracked, and so re-runs don't replay the same URL.
+            mark_url_processed $link.url
 
             # Add delay between processing different videos to avoid rate limiting
             if $video_num < $total_videos {
@@ -604,18 +985,13 @@ export def main [...args: string] {
     create_summary_page $summary_items $summary_playlist_url
 
     if not ($playlist | is-empty) {
-      let ids = ($playlist | each { |url| 
-        try {
-          $url | parse --regex 'v=(?P<id>[^&]+)' | get id.0
-        } catch {
-          null
-        }
-      } | where $it != null)
-      
-      if not ($ids | is-empty) {
-        omarchy-launch-or-focus-webapp YouTube $"https://www.youtube.com/watch_videos?video_ids=($ids | str join ',')" #this solution only works for omarchy linux.
+      let playlist_url = (build_playlist_url $playlist)
+      if $playlist_url != null {
+        open_url $playlist_url "YouTube"
       }
     }
+
+    print_stats $stats
     } else {
         print $"(ansi yellow)No new videos found(ansi reset)"
     }
@@ -623,10 +999,7 @@ export def main [...args: string] {
 
 
 #7/6/24 cut the sleep timers down to 2 seconds to speed up the review process a bit.
-#TODO: non omarchy way to open the youtube playlist
-#TODO: Handle channels that put out multiple videos per day. Pull the first 3 urls from the feed and review if they are new.
 #TODO: a function to just add labels/tags to files that already exist.
-#TODO: a function that opens all the s or a tier files in a new youtube playlist
-#TODO: create a summary page with the rating, short description, and link to each video,plus a link for the playlist 
+#TODO: parallel video processing with par-each for better performance
 
 
